@@ -32,7 +32,7 @@ static const char* SERVER        = "http://192.168.29.209:5001";
 
 #define I2C_SDA   6
 #define I2C_SCL   7
-#define TOUCH_PIN 4
+#define TOUCH_PIN 13
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
 
@@ -42,7 +42,7 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SD
 #define MS_PER_WORD       330UL
 #define EXTRA_DISPLAY_MS  2000UL
 #define POLL_INTERVAL_MS  2000UL
-#define TOUCH_THRESHOLD   25000
+// TTP223 touch module: digital HIGH when touched, LOW when idle
 
 // ═══════════════════════════════════════════════════════════════════════
 //  EYE CONFIGURATION (RoboEyes-style)
@@ -131,11 +131,11 @@ String        aiText      = "";
 unsigned long textStart   = 0;
 unsigned long textDisplayDuration = 5000UL;
 
-// Touch
-unsigned long lastTouchTime    = 0;
-int           tapCount         = 0;
-bool          wasTouched       = false;
-unsigned long doubleTapWindow  = 400;
+// Touch — interrupt-driven for reliability
+volatile bool touchFlag      = false;   // set by ISR
+unsigned long lastTouchTime   = 0;
+int           tapCount        = 0;
+unsigned long doubleTapWindow = 400;
 
 // Polling
 unsigned long lastPoll = 0;
@@ -312,6 +312,121 @@ float getAnimOffsetY() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  CUTE HAPPY FACE — Emo-style ^_^ with blush and smile
+// ═══════════════════════════════════════════════════════════════════════
+void drawCuteHappyFace(int offsetY) {
+    unsigned long t = millis() - stateStart;
+
+    // Damped bounce
+    float damping = max(0.0f, 1.0f - (float)t / 2200.0f);
+    int bounceY = offsetY + (int)(4.0f * sin(t / 80.0f) * damping);
+
+    int lcx = EYE_L_CX, rcx = EYE_R_CX, cy = EYE_CY + bounceY;
+    int hw = EYE_W / 2 + 2;
+
+    // ── Curved arc eyes (thick ^_^ like Emo) ────────────────────────
+    for (int i = -hw; i <= hw; i++) {
+        float norm = (float)(i * i) / (float)(hw * hw);
+        int y = cy - 6 + (int)(12.0f * (1.0f - norm));
+        // Draw 3px thick arc
+        for (int t = 0; t < 3; t++) {
+            u8g2.drawPixel(lcx + i, y + t);
+            u8g2.drawPixel(rcx + i, y + t);
+        }
+    }
+
+    // ── Rosy blush — dithered circles under each eye ────────────────
+    for (int dx = -4; dx <= 4; dx++) {
+        for (int dy = -4; dy <= 4; dy++) {
+            if (dx*dx + dy*dy <= 16 && (dx + dy) % 2 == 0) {
+                u8g2.drawPixel(lcx - 4 + dx, cy + 12 + dy);
+                u8g2.drawPixel(rcx + 4 + dx, cy + 12 + dy);
+            }
+        }
+    }
+
+    // ── Big happy smile ─────────────────────────────────────────────
+    int smileCx = SCREEN_W / 2, smileCy = cy + 18;
+    for (int i = -12; i <= 12; i++) {
+        float norm = (float)(i * i) / (12.0f * 12.0f);
+        int sy = smileCy - (int)(5.0f * (1.0f - norm));
+        u8g2.drawPixel(smileCx + i, sy);
+        u8g2.drawPixel(smileCx + i, sy + 1);
+    }
+
+    // ── Floating hearts / stars ─────────────────────────────────────
+    if (t < 2500) {
+        float particles[][3] = {
+            {14, 0.16f, 0},     // x, speed (px/ms), start delay
+            {45, 0.12f, 300},
+            {84, 0.18f, 150},
+            {114, 0.14f, 500},
+        };
+        for (int p = 0; p < 4; p++) {
+            int pt = max(0, (int)t - (int)particles[p][2]);
+            if (pt > 0) {
+                int py = 58 - (int)(pt * particles[p][1]);
+                if (py > 2 && py < 60) {
+                    // Draw tiny heart shape: v
+                    int px = (int)particles[p][0];
+                    u8g2.drawPixel(px - 1, py - 1);
+                    u8g2.drawPixel(px + 1, py - 1);
+                    u8g2.drawPixel(px - 2, py);
+                    u8g2.drawPixel(px + 2, py);
+                    u8g2.drawPixel(px - 1, py + 1);
+                    u8g2.drawPixel(px + 1, py + 1);
+                    u8g2.drawPixel(px, py + 2);
+                }
+            }
+        }
+    }
+}
+
+void drawCuteExcitedFace(int offsetY) {
+    unsigned long t = millis() - stateStart;
+
+    // Faster bounce
+    float damping = max(0.0f, 1.0f - (float)t / 2500.0f);
+    int bounceY = offsetY + (int)(5.0f * sin(t / 60.0f) * damping);
+
+    int lcx = EYE_L_CX, rcx = EYE_R_CX, cy = EYE_CY + bounceY;
+
+    // ── Star eyes ★_★ — spinning ────────────────────────────────────
+    float spin = t / 250.0f;
+    int starR = 12 + (int)(2.0f * sin(t / 80.0f));
+    for (int eye = 0; eye < 2; eye++) {
+        int ecx = (eye == 0) ? lcx : rcx;
+        float dir = (eye == 0) ? 1.0f : -1.0f;
+        for (int i = 0; i < 5; i++) {
+            float step = PI * 2.0f / 5.0f;
+            float oa = -PI/2 + spin * dir + step * i;
+            float ia = oa + step / 2.0f;
+            float na = oa + step;
+            u8g2.drawLine(ecx + (int)(starR * cos(oa)), cy + (int)(starR * sin(oa)),
+                          ecx + (int)(starR * 0.4f * cos(ia)), cy + (int)(starR * 0.4f * sin(ia)));
+            u8g2.drawLine(ecx + (int)(starR * 0.4f * cos(ia)), cy + (int)(starR * 0.4f * sin(ia)),
+                          ecx + (int)(starR * cos(na)), cy + (int)(starR * sin(na)));
+        }
+    }
+
+    // ── Orbiting sparkles ───────────────────────────────────────────
+    for (int i = 0; i < 6; i++) {
+        float a = (t / 350.0f) + i * (PI * 2.0f / 6);
+        int sx = SCREEN_W / 2 + (int)(48.0f * cos(a));
+        int sy = SCREEN_H / 2 + (int)(26.0f * sin(a));
+        if (sx > 3 && sx < 125 && sy > 3 && sy < 61) {
+            int sz = 2 + ((t / 150 + i) % 2);
+            u8g2.drawLine(sx - sz, sy, sx + sz, sy);
+            u8g2.drawLine(sx, sy - sz, sx, sy + sz);
+        }
+    }
+
+    // ── Pulsing O mouth ─────────────────────────────────────────────
+    int mr = 4 + (int)(2.0f * sin(t / 60.0f));
+    u8g2.drawCircle(SCREEN_W / 2, cy + 18, mr);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  DRAW BOTH EYES
 // ═══════════════════════════════════════════════════════════════════════
 void drawEyes() {
@@ -321,35 +436,39 @@ void drawEyes() {
     eyeLidTop = lerp(eyeLidTop, eyeLidTargetTop, 0.25f);
     eyeLidBot = lerp(eyeLidBot, eyeLidTargetBot, 0.25f);
 
-    // Get mood shape modifiers
-    MoodParams mp = getMoodParams(currentMood);
-
-    // Curiosity: outer eye gets taller when looking sideways
-    int curiosityL = 0, curiosityR = 0;
-    if (curiosityOn) {
-        if (eyeCurrentX < -0.3f) curiosityL = (int)(abs(eyeCurrentX) * 6);
-        if (eyeCurrentX >  0.3f) curiosityR = (int)(abs(eyeCurrentX) * 6);
-    }
-
     // Animation offset
     float animY = getAnimOffsetY();
     int offsetY = (int)animY;
 
     u8g2.clearBuffer();
 
-    // Left eye
-    drawEye(EYE_L_CX, EYE_CY + offsetY,
-            EYE_W, EYE_H + curiosityL,
-            eyeCurrentX, eyeCurrentY,
-            mp.topTrimL, mp.bottomTrimL,
-            eyeLidTop, eyeLidBot);
+    // Use special cute rendering for HAPPY and EXCITED
+    if (currentState == STATE_HAPPY) {
+        drawCuteHappyFace(offsetY);
+    } else if (currentState == STATE_EXCITED) {
+        drawCuteExcitedFace(offsetY);
+    } else {
+        // Normal eye rendering
+        MoodParams mp = getMoodParams(currentMood);
 
-    // Right eye
-    drawEye(EYE_R_CX, EYE_CY + offsetY,
-            EYE_W, EYE_H + curiosityR,
-            eyeCurrentX, eyeCurrentY,
-            mp.topTrimR, mp.bottomTrimR,
-            eyeLidTop, eyeLidBot);
+        int curiosityL = 0, curiosityR = 0;
+        if (curiosityOn) {
+            if (eyeCurrentX < -0.3f) curiosityL = (int)(abs(eyeCurrentX) * 6);
+            if (eyeCurrentX >  0.3f) curiosityR = (int)(abs(eyeCurrentX) * 6);
+        }
+
+        drawEye(EYE_L_CX, EYE_CY + offsetY,
+                EYE_W, EYE_H + curiosityL,
+                eyeCurrentX, eyeCurrentY,
+                mp.topTrimL, mp.bottomTrimL,
+                eyeLidTop, eyeLidBot);
+
+        drawEye(EYE_R_CX, EYE_CY + offsetY,
+                EYE_W, EYE_H + curiosityR,
+                eyeCurrentX, eyeCurrentY,
+                mp.topTrimR, mp.bottomTrimR,
+                eyeLidTop, eyeLidBot);
+    }
 
     u8g2.sendBuffer();
 }
@@ -484,30 +603,42 @@ void applyState(RobiState state) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  TOUCH
+//  TOUCH — Interrupt-driven
 // ═══════════════════════════════════════════════════════════════════════
+
+// ISR: runs instantly when touch pin goes HIGH, even during HTTP
+void IRAM_ATTR touchISR() {
+    touchFlag = true;
+}
+
 void handleTouch() {
-    uint32_t val = touchRead(TOUCH_PIN);
-    bool touching = (val > TOUCH_THRESHOLD);
+    if (!touchFlag) return;
+    touchFlag = false;
 
-    if (touching && !wasTouched) {
-        unsigned long now = millis();
-        if (now - lastTouchTime < doubleTapWindow) {
-            tapCount++;
-        } else {
-            tapCount = 1;
-        }
-        lastTouchTime = now;
-        wasTouched = true;
+    unsigned long now = millis();
+    Serial.printf("*** TOUCH @ %lu ms ***\n", now);
+
+    // Debounce: ignore if less than 150ms since last touch
+    if (now - lastTouchTime < 150) return;
+
+    if (now - lastTouchTime < doubleTapWindow) {
+        tapCount++;
+    } else {
+        tapCount = 1;
     }
-    if (!touching) wasTouched = false;
+    lastTouchTime = now;
+}
 
+void processTaps() {
+    // Wait for double-tap window to expire before deciding
     if (tapCount > 0 && millis() - lastTouchTime > doubleTapWindow) {
         if (tapCount >= 2) {
+            Serial.println("Double tap → EXCITED");
             prevAnimState = currentState;
             currentState = STATE_EXCITED;
             lastAppliedState = (RobiState)99;
         } else {
+            Serial.println("Single tap → HAPPY");
             prevAnimState = currentState;
             currentState = STATE_HAPPY;
             lastAppliedState = (RobiState)99;
@@ -546,8 +677,9 @@ void pollServer() {
             } else if (s == "thinking" && currentState != STATE_THINKING) {
                 currentState = STATE_THINKING;
                 lastAppliedState = (RobiState)99;
-            } else if (s == "idle" &&
-                       (currentState == STATE_LISTENING || currentState == STATE_THINKING)) {
+            } else if (s == "idle" && currentState == STATE_LISTENING) {
+                // Only cancel listening on idle, NOT thinking.
+                // Thinking persists until the AI answer arrives → TALKING
                 currentState = STATE_IDLE;
                 lastAppliedState = (RobiState)99;
             }
@@ -585,6 +717,9 @@ void setup() {
 
     u8g2.begin();
     u8g2.setContrast(200);
+    pinMode(TOUCH_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(TOUCH_PIN), touchISR, RISING);
+    Serial.printf("Touch interrupt attached on GPIO %d\n", TOUCH_PIN);
 
     // Boot animation: eyes closed
     eyeLidTop = 1.0f; eyeLidBot = 1.0f;
@@ -625,6 +760,7 @@ void setup() {
 // ═══════════════════════════════════════════════════════════════════════
 void loop() {
     handleTouch();
+    processTaps();
     pollServer();
 
     // Tap animation timeout → back to idle
