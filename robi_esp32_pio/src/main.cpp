@@ -129,19 +129,18 @@ bool isSleeping = false;
 // Emo idle emotions — random short expressions
 enum EmoEmotion {
     EMO_NONE,
-    EMO_SUSPICIOUS,   // one eye squints, looks sideways
-    EMO_SAD,          // droopy eyes, tear
-    EMO_BORED,        // half-lidded drift
-    EMO_SIGH,         // dramatic close + slow reopen
-    EMO_CURIOUS,      // one eye bigger, peek
-    EMO_DIZZY,        // eyes shake
-    EMO_SNEEZE,       // squeeze shut + head bob
-    EMO_WINK,         // one eye closes smoothly
-    EMO_STARTLED,     // eyes go wide, then relax
-    EMO_SHY,          // eyes shrink, look down
-    EMO_MISCHIEVOUS,  // narrow sly look
-    EMO_DAYDREAM,     // eyes float up dreamily
-    EMO_COUNT = 12    // total emotions (excluding NONE)
+    EMO_SUSPICIOUS,   EMO_SAD,          EMO_BORED,
+    EMO_SIGH,         EMO_CURIOUS,      EMO_DIZZY,
+    EMO_SNEEZE,       EMO_WINK,         EMO_STARTLED,
+    EMO_SHY,          EMO_MISCHIEVOUS,  EMO_DAYDREAM,
+    // New batch
+    EMO_ANGRY,        EMO_EXCITED_BOUNCE, EMO_LOVE,
+    EMO_CONFUSED,     EMO_PROUD,        EMO_SCARED,
+    EMO_PLAYFUL,      EMO_GRUMPY,       EMO_GLITCH,
+    EMO_PEEK,         EMO_ROLL_EYES,    EMO_CROSS_EYED,
+    EMO_FOCUSED,      EMO_VIBING,       EMO_SMUG,
+    EMO_SHOCKED,      EMO_SLEEPY_BLINK, EMO_GIGGLE,
+    EMO_COUNT = 30
 };
 EmoEmotion currentEmotion = EMO_NONE;
 unsigned long emotionStart = 0;
@@ -738,17 +737,229 @@ void drawEmoEmotion() {
             u8g2.drawLine(sx, sy - 2, sx, sy + 2);
         }
     }
+
+    // ── ANGRY: squint + shake ──────────────────────────────────
+    if (currentEmotion == EMO_ANGRY) {
+        float entry = min(1.0f, p * 4.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+        float shake = sin(t / 20.0f) * e * 3;
+        drawEye(lcx + (int)shake, cy, EYE_W, (int)(EYE_H * (1.0f - e*0.35f)), 0, 0,
+                (int)(e * 10), (int)(e * 4), 0, 0);
+        drawEye(rcx + (int)shake, cy, EYE_W, (int)(EYE_H * (1.0f - e*0.35f)), 0, 0,
+                (int)(e * 10), (int)(e * 4), 0, 0);
+    }
+
+    // ── EXCITED BOUNCE: rapid vertical bouncing ────────────────
+    else if (currentEmotion == EMO_EXCITED_BOUNCE) {
+        float e = (p < 0.1f) ? p * 10 : ((p > 0.85f) ? (1.0f - p) * 6.67f : 1.0f);
+        e = min(1.0f, max(0.0f, e));
+        int bounce = (int)(sin(t / 40.0f) * 6 * e);
+        int grow = (int)(e * 4);
+        drawEye(lcx, cy + bounce, EYE_W + grow, EYE_H + grow, 0, 0, 0, 0, 0, 0);
+        drawEye(rcx, cy + bounce, EYE_W + grow, EYE_H + grow, 0, 0, 0, 0, 0, 0);
+    }
+
+    // ── LOVE: heart-shaped eyes ────────────────────────────────
+    else if (currentEmotion == EMO_LOVE) {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+        float pulse = 1.0f + 0.15f * sin(t / 80.0f) * e;
+        for (int eye = 0; eye < 2; eye++) {
+            int ecx = (eye == 0) ? lcx : rcx;
+            int r = (int)(9 * e * pulse);
+            if (r > 2) {
+                u8g2.drawDisc(ecx - r/2, cy - r/3, r/2);
+                u8g2.drawDisc(ecx + r/2, cy - r/3, r/2);
+                u8g2.drawTriangle(ecx - r, cy, ecx + r, cy, ecx, cy + r);
+            }
+        }
+    }
+
+    // ── CONFUSED: one eye bigger, head tilt ─────────────────────
+    else if (currentEmotion == EMO_CONFUSED) {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.75f) ? (p - 0.75f) * 4.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+        int tilt = (int)(e * 4);
+        drawEye(lcx, cy - tilt, EYE_W, EYE_H + (int)(e * 4), -0.3f * e, -0.2f * e, 0, 0, 0, 0);
+        drawEye(rcx, cy + tilt, EYE_W, EYE_H - (int)(e * 3), 0.3f * e, 0.2f * e,
+                (int)(e * 3), 0, 0, 0);
+        if (e > 0.5f) { u8g2.drawStr(rcx + 14, cy - 14, "?"); }
+    }
+
+    // ── PROUD: chin up, eyes narrow upward ──────────────────────
+    else if (currentEmotion == EMO_PROUD) {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+        drawEye(lcx, cy - (int)(e * 5), EYE_W, EYE_H, 0, -e * 0.4f,
+                0, (int)(e * 6), e * 0.3f, 0);
+        drawEye(rcx, cy - (int)(e * 5), EYE_W, EYE_H, 0, -e * 0.4f,
+                0, (int)(e * 6), e * 0.3f, 0);
+    }
+
+    // ── SCARED: wide eyes, trembling ────────────────────────────
+    else if (currentEmotion == EMO_SCARED) {
+        float entry = min(1.0f, p * 5.0f);
+        float hold = (p > 0.7f) ? (p - 0.7f) / 0.3f : 0.0f;
+        float e = entry * (1.0f - hold);
+        int tremble = (int)(sin(t / 15.0f) * 2 * e);
+        int grow = (int)(e * 5);
+        drawEye(lcx + tremble, cy, EYE_W + grow, EYE_H + grow, 0, -e*0.2f, 0, 0, 0, 0);
+        drawEye(rcx + tremble, cy, EYE_W + grow, EYE_H + grow, 0, -e*0.2f, 0, 0, 0, 0);
+    }
+
+    // ── PLAYFUL: alternating bounce ─────────────────────────────
+    else if (currentEmotion == EMO_PLAYFUL) {
+        float e = (p < 0.1f) ? p * 10 : ((p > 0.85f) ? (1.0f - p) * 6.67f : 1.0f);
+        e = min(1.0f, max(0.0f, e));
+        int b1 = (int)(sin(t / 50.0f) * 5 * e);
+        int b2 = (int)(sin(t / 50.0f + PI) * 5 * e);
+        drawEye(lcx, cy + b1, EYE_W, EYE_H, sin(t/200.0f)*0.5f*e, 0, 0, 0, 0, 0);
+        drawEye(rcx, cy + b2, EYE_W, EYE_H, sin(t/200.0f)*0.5f*e, 0, 0, 0, 0, 0);
+    }
+
+    // ── GRUMPY: heavy droopy squint ─────────────────────────────
+    else if (currentEmotion == EMO_GRUMPY) {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+        drawEye(lcx, cy + (int)(e * 2), EYE_W, (int)(EYE_H * (1.0f - e*0.3f)),
+                0, e * 0.3f, (int)(e * 12), 0, e * 0.3f, 0);
+        drawEye(rcx, cy + (int)(e * 2), EYE_W, (int)(EYE_H * (1.0f - e*0.3f)),
+                0, e * 0.3f, (int)(e * 12), 0, e * 0.3f, 0);
+    }
+
+    // ── GLITCH: screen tear/static ──────────────────────────────
+    else if (currentEmotion == EMO_GLITCH) {
+        float e = (p < 0.15f) ? p / 0.15f : ((p > 0.7f) ? (1.0f - p) / 0.3f : 1.0f);
+        e = min(1.0f, max(0.0f, e));
+        int tearOff = (int)(sin(t / 30.0f) * 8 * e);
+        int split = (tearOff > 0) ? tearOff : 0;
+        drawEye(lcx + (int)(e * tearOff), cy, EYE_W, EYE_H, 0, 0, 0, 0, 0, 0);
+        drawEye(rcx - (int)(e * tearOff), cy, EYE_W, EYE_H, 0, 0, 0, 0, 0, 0);
+        if (e > 0.5f) {
+            int scanY = (t / 8) % 64;
+            u8g2.drawHLine(0, scanY, 128);
+        }
+    }
+
+    // ── PEEK: eyes slide to edge ────────────────────────────────
+    else if (currentEmotion == EMO_PEEK) {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.75f) ? (p - 0.75f) * 4.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+        int slide = (int)(e * 20);
+        drawEye(lcx + slide, cy, EYE_W, EYE_H, e, 0, 0, 0, 0, 0);
+        drawEye(rcx + slide, cy, EYE_W, EYE_H, e, 0, 0, 0, 0, 0);
+    }
+
+    // ── ROLL EYES: pupils do a full circle ──────────────────────
+    else if (currentEmotion == EMO_ROLL_EYES) {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.85f) ? (p - 0.85f) / 0.15f : 0.0f;
+        float e = entry * (1.0f - hold);
+        float angle = p * PI * 2 * 1.5f;
+        float px = cos(angle) * 0.8f * e;
+        float py = sin(angle) * 0.6f * e;
+        drawEye(lcx, cy, EYE_W, EYE_H, px, py, 0, 0, 0, 0);
+        drawEye(rcx, cy, EYE_W, EYE_H, px, py, 0, 0, 0, 0);
+    }
+
+    // ── CROSS-EYED: pupils converge ─────────────────────────────
+    else if (currentEmotion == EMO_CROSS_EYED) {
+        float entry = min(1.0f, p * 4.0f);
+        float hold = (p > 0.7f) ? (p - 0.7f) / 0.3f : 0.0f;
+        float e = entry * (1.0f - hold);
+        drawEye(lcx, cy, EYE_W, EYE_H, e * 0.9f, 0, 0, 0, 0, 0);
+        drawEye(rcx, cy, EYE_W, EYE_H, -e * 0.9f, 0, 0, 0, 0, 0);
+    }
+
+    // ── FOCUSED: narrow + lock forward ──────────────────────────
+    else if (currentEmotion == EMO_FOCUSED) {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+        drawEye(lcx, cy, EYE_W + (int)(e*4), (int)(EYE_H * (1.0f - e*0.4f)), 0, 0,
+                (int)(e * 4), (int)(e * 4), 0, 0);
+        drawEye(rcx, cy, EYE_W + (int)(e*4), (int)(EYE_H * (1.0f - e*0.4f)), 0, 0,
+                (int)(e * 4), (int)(e * 4), 0, 0);
+    }
+
+    // ── VIBING: bounce to a beat ────────────────────────────────
+    else if (currentEmotion == EMO_VIBING) {
+        float e = (p < 0.1f) ? p * 10 : ((p > 0.85f) ? (1.0f - p) * 6.67f : 1.0f);
+        e = min(1.0f, max(0.0f, e));
+        float beatPhase = fmod(t / 250.0f, 1.0f);
+        int beatBounce = (beatPhase < 0.3f) ? (int)(sin(beatPhase / 0.3f * PI) * 5 * e) : 0;
+        float tilt = sin(t / 500.0f) * 0.4f * e;
+        drawEye(lcx, cy - beatBounce, EYE_W, EYE_H, tilt, 0, 0, 0, 0, 0);
+        drawEye(rcx, cy - beatBounce, EYE_W, EYE_H, tilt, 0, 0, 0, 0, 0);
+    }
+
+    // ── SMUG: one eye half-closed ───────────────────────────────
+    else if (currentEmotion == EMO_SMUG) {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+        drawEye(lcx, cy, EYE_W, EYE_H, e * 0.5f, 0, (int)(e * 5), 0, e * 0.4f, 0);
+        drawEye(rcx, cy, EYE_W, EYE_H, e * 0.5f, 0, 0, 0, 0, 0);
+    }
+
+    // ── SHOCKED: stretch wide + vibrate ─────────────────────────
+    else if (currentEmotion == EMO_SHOCKED) {
+        float entry = min(1.0f, p * 8.0f);
+        float hold = (p > 0.6f) ? (p - 0.6f) / 0.4f : 0.0f;
+        float e = entry * (1.0f - hold);
+        int vib = (int)(sin(t / 10.0f) * 2 * e);
+        int grow = (int)(e * 10);
+        drawEye(lcx + vib, cy - (int)(e*4), EYE_W + grow, EYE_H + grow, 0, -e*0.3f, 0, 0, 0, 0);
+        drawEye(rcx + vib, cy - (int)(e*4), EYE_W + grow, EYE_H + grow, 0, -e*0.3f, 0, 0, 0, 0);
+        if (e > 0.6f) {
+            u8g2.setFont(u8g2_font_7x13B_tr);
+            u8g2.drawStr(SCREEN_W/2 - 3, cy + 20, "!");
+        }
+    }
+
+    // ── SLEEPY BLINK: slow heavy blinks ─────────────────────────
+    else if (currentEmotion == EMO_SLEEPY_BLINK) {
+        float blinkCycle = fmod(p * 3.0f, 1.0f);
+        float exit = (p > 0.85f) ? (p - 0.85f) / 0.15f : 0.0f;
+        float lid;
+        if (blinkCycle < 0.4f) lid = blinkCycle / 0.4f;
+        else if (blinkCycle < 0.6f) lid = 1.0f;
+        else lid = (1.0f - (blinkCycle - 0.6f) / 0.4f);
+        lid *= (1.0f - exit);
+        drawEye(lcx, cy, EYE_W, EYE_H, 0, 0, (int)(lid * 6), 0, lid * 0.7f, lid * 0.3f);
+        drawEye(rcx, cy, EYE_W, EYE_H, 0, 0, (int)(lid * 6), 0, lid * 0.7f, lid * 0.3f);
+    }
+
+    // ── GIGGLE: rapid small bounces + squish ────────────────────
+    else if (currentEmotion == EMO_GIGGLE) {
+        float e = (p < 0.1f) ? p * 10 : ((p > 0.85f) ? (1.0f - p) * 6.67f : 1.0f);
+        e = min(1.0f, max(0.0f, e));
+        int gigBounce = (int)(sin(t / 30.0f) * 3 * e);
+        int squish = (int)(abs(sin(t / 30.0f)) * 3 * e);
+        drawCrescentEye(lcx, cy + gigBounce, EYE_W/2, EYE_H/2, (int)(e * 6));
+        drawCrescentEye(rcx, cy + gigBounce, EYE_W/2, EYE_H/2, (int)(e * 6));
+    }
 }
 
 void startRandomEmotion() {
     // Pick a random emotion (1-12)
     currentEmotion = (EmoEmotion)(1 + random(0, EMO_COUNT));
     emotionStart = millis();
-    emotionDuration = 3000 + random(0, 3000);
+    emotionDuration = 2000 + random(0, 2500);  // 2-4.5s hyperactive
 
     const char* names[] = {"?", "Suspicious", "Sad", "Bored", "Sigh", "Curious",
                            "Dizzy", "Sneeze", "Wink", "Startled", "Shy",
-                           "Mischievous", "Daydream"};
+                           "Mischievous", "Daydream", "Angry", "ExcitedBounce",
+                           "Love", "Confused", "Proud", "Scared", "Playful",
+                           "Grumpy", "Glitch", "Peek", "RollEyes", "CrossEyed",
+                           "Focused", "Vibing", "Smug", "Shocked", "SleepyBlink",
+                           "Giggle"};
     Serial.printf("Emo: %s (%lums)\n", names[currentEmotion], emotionDuration);
 }
 
@@ -1087,7 +1298,7 @@ void setup() {
     nextBlinkTime = millis() + 2000 + random(0, 3000);
     nextIdleMove = millis() + 1500 + random(0, 2000);
     nextSleepTime = millis() + 180000UL + random(0, 120000);  // 3-5 min
-    nextEmotionTime = millis() + 8000UL + random(0, 7000);     // 8-15s
+    nextEmotionTime = millis() + 4000UL + random(0, 4000);  // 4-8s hyperactive     // 8-15s
 
     Serial.println("Ready!");
 }
@@ -1151,7 +1362,7 @@ void loop() {
         currentEmotion = EMO_NONE;
         autoBlinkOn = true;
         idleModeOn = true;
-        nextEmotionTime = millis() + 8000UL + random(0, 7000);  // 8-15s
+        nextEmotionTime = millis() + 4000UL + random(0, 4000);  // 4-8s hyperactive  // 8-15s
     }
 
     // Cancel emotion if state changes
