@@ -353,89 +353,115 @@ void drawCuteExcitedFace(int offsetY) {
 // ═══════════════════════════════════════════════════════════════════════
 //  SLEEPING FACE — Emo-style yawn → sleep → wake
 // ═══════════════════════════════════════════════════════════════════════
-//  Phase 1 (0-1200ms):   Yawn — droopy tilted crescents + oval mouth
-//  Phase 2 (1200-4500ms): Sleep — flat line eyes + floating Z bubble
-//  Phase 3 (4500-5500ms): Wake — eyes open back up
+//  Phase 1 (0-2s):     Yawn — eyes slowly droop + mouth opens
+//  Phase 2 (2s-27s):   Sleep — cute curved closed eyes + breathing + Zzz
+//  Phase 3 (27s-30s):  Wake — stretch, eyes open, double blink
+
+#define SLEEP_TOTAL_MS 30000UL
+#define YAWN_END_MS    2000UL
+#define WAKE_START_MS  27000UL
+
+// Draw a cute curved closed eye (gentle smile arc) — like Emo's sleeping face
+void drawSleepArc(int cx, int cy, int halfW, int thickness) {
+    for (int i = -halfW; i <= halfW; i++) {
+        float norm = (float)(i * i) / (float)(halfW * halfW);
+        // Gentle downward curve
+        int y = cy + (int)(4.0f * (1.0f - norm));
+        for (int t = 0; t < thickness; t++) {
+            u8g2.drawPixel(cx + i, y - t);
+        }
+    }
+}
 
 void drawSleepingFace() {
     unsigned long t = millis() - animStart;
     int lcx = EYE_L_CX, rcx = EYE_R_CX, cy = EYE_CY;
     int rx = EYE_W / 2, ry = EYE_H / 2;
 
-    // ── PHASE 1: YAWN (0 – 1200ms) ──────────────────────────────────
-    if (t < 1200) {
-        float p = (float)t / 1200.0f;
+    // ── PHASE 1: YAWN (0 – 2s) ─────────────────────────────────────
+    if (t < YAWN_END_MS) {
+        float p = (float)t / (float)YAWN_END_MS;
 
-        // Eyes droop — crescent gets heavier (more closed)
-        int cutShift = (int)(p * 10);
-        // Left eye tilts down-left, right tilts down-right
-        int tiltL = (int)(p * -3);
-        int tiltR = (int)(p * -3);
+        // Eyes slowly droop into crescents
+        int cutShift = (int)(p * 12);
+        drawCrescentEye(lcx, cy, rx, ry, cutShift);
+        drawCrescentEye(rcx, cy, rx, ry, cutShift);
 
-        drawCrescentEye(lcx, cy + tiltL, rx, ry, cutShift);
-        drawCrescentEye(rcx, cy + tiltR, rx, ry, cutShift);
-
-        // Oval mouth opens gradually (yawning)
-        int mouthRx = (int)(p * 7);
-        int mouthRy = (int)(p * 10);
-        if (mouthRx > 2) {
+        // Mouth opens into an oval (yawning)
+        int mouthRx = (int)(p * 6);
+        int mouthRy = (int)(p * 9);
+        if (mouthRx > 1) {
             u8g2.drawEllipse(SCREEN_W / 2, cy + 22, mouthRx, mouthRy);
+            // Fill the mouth oval slightly for depth
+            if (mouthRx > 3) {
+                u8g2.drawEllipse(SCREEN_W / 2, cy + 22, mouthRx - 2, mouthRy - 2);
+            }
         }
 
-    // ── PHASE 2: SLEEP (1200 – 4500ms) ──────────────────────────────
-    } else if (t < 4500) {
-        unsigned long st = t - 1200;
+    // ── PHASE 2: SLEEP (2s – 27s) ─────────────────────────────────
+    } else if (t < WAKE_START_MS) {
+        unsigned long st = t - YAWN_END_MS;
 
-        // Flat line eyes — two thin horizontal lines
-        int lineW = rx + 4;
-        // Gentle breathing: tiny vertical float
-        int breathe = (int)(1.5f * sin(st / 400.0f));
+        // Gentle breathing: slow up/down bob
+        int breathe = (int)(2.0f * sin(st / 600.0f));
 
-        // Left flat eye line (slightly tilted up on outside)
-        u8g2.drawLine(lcx - lineW, cy + 2 + breathe, lcx + lineW, cy - 1 + breathe);
-        u8g2.drawLine(lcx - lineW, cy + 3 + breathe, lcx + lineW, cy + breathe);
+        // Cute curved closed eyes (like gentle smile arcs)
+        drawSleepArc(lcx, cy + 2 + breathe, rx + 2, 3);
+        drawSleepArc(rcx, cy + 2 + breathe, rx + 2, 3);
 
-        // Right flat eye line (mirror tilt)
-        u8g2.drawLine(rcx - lineW, cy - 1 + breathe, rcx + lineW, cy + 2 + breathe);
-        u8g2.drawLine(rcx - lineW, cy + breathe, rcx + lineW, cy + 3 + breathe);
+        // Z bubble — loops every 3 seconds, resets position
+        unsigned long zCycle = st % 3000UL;
+        float zp = (float)zCycle / 3000.0f;
+        int zBaseX = rcx + 14;
+        int zBaseY = cy - 8;
+        float bob = 1.5f * sin(zCycle / 200.0f);
 
-        // Floating Z bubble — rises and bobs
-        int zBaseX = rcx + 18;
-        int zBaseY = cy - 14;
-        float bob = 2.0f * sin(st / 300.0f);
-        int zY = zBaseY - (int)(st * 0.004f) + (int)bob;
+        // Three Z's at different sizes, rising up
+        int z1Y = zBaseY - (int)(zp * 20) + (int)bob;
+        int z2Y = z1Y - 8 - (int)(zp * 6);
+        int z3Y = z2Y - 6 - (int)(zp * 4);
 
-        // Draw "Z" characters getting smaller as they rise
+        // Fade: only show Z's that are on-screen
         u8g2.setFont(u8g2_font_7x13B_tr);
-        u8g2.drawStr(zBaseX, max(2, zY + 12), "Z");
-
+        if (z1Y > 0 && z1Y < 60) u8g2.drawStr(zBaseX, z1Y, "Z");
         u8g2.setFont(u8g2_font_6x10_tr);
-        int z2Y = zY + 3 - (int)(st * 0.003f);
-        if (z2Y > 0) u8g2.drawStr(zBaseX + 9, max(2, z2Y), "z");
-
+        if (z2Y > 0 && z2Y < 55) u8g2.drawStr(zBaseX + 8, z2Y, "z");
         u8g2.setFont(u8g2_font_5x8_tr);
-        int z3Y = z2Y - 4 - (int)(st * 0.002f);
-        if (z3Y > 0) u8g2.drawStr(zBaseX + 16, max(2, z3Y), "z");
+        if (z3Y > 0 && z3Y < 50) u8g2.drawStr(zBaseX + 14, z3Y, "z");
 
-    // ── PHASE 3: WAKE UP (4500 – 5500ms) ─────────────────────────────
+    // ── PHASE 3: WAKE UP (27s – 30s) ──────────────────────────────
     } else {
-        float p = min(1.0f, (float)(t - 4500) / 800.0f);
+        unsigned long wt = t - WAKE_START_MS;
+        float p = min(1.0f, (float)wt / 2000.0f);
 
-        // Eyes go from flat lines back to full rounded rect
-        // Gradually restore eye height
-        int wakeH = (int)(p * ry);
-        if (wakeH < 3) {
-            // Still mostly flat lines
-            int lineW = rx + 4;
-            u8g2.drawLine(lcx - lineW, cy + 1, lcx + lineW, cy - 1);
-            u8g2.drawLine(lcx - lineW, cy + 2, lcx + lineW, cy);
-            u8g2.drawLine(rcx - lineW, cy - 1, rcx + lineW, cy + 1);
-            u8g2.drawLine(rcx - lineW, cy, rcx + lineW, cy + 2);
+        if (p < 0.3f) {
+            // Still groggy — curved sleep arcs, slight stretch
+            float stretch = p / 0.3f;
+            int breathe = (int)(3.0f * stretch);
+            drawSleepArc(lcx, cy + 2 - breathe, rx + 2, 3);
+            drawSleepArc(rcx, cy + 2 - breathe, rx + 2, 3);
+        } else if (p < 0.6f) {
+            // Eyes opening — growing from slit to full
+            float op = (p - 0.3f) / 0.3f;
+            int eyeH = max(4, (int)(EYE_H * op));
+            drawEye(lcx, cy, EYE_W, eyeH, 0, 0, 0, 0, 0, 0);
+            drawEye(rcx, cy, EYE_W, eyeH, 0, 0, 0, 0, 0, 0);
+        } else if (p < 0.75f) {
+            // First blink — quick close
+            float bp = (p - 0.6f) / 0.15f;
+            float sq = (bp < 0.5f) ? bp * 2.0f : (1.0f - bp) * 2.0f;
+            drawEye(lcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, sq, sq);
+            drawEye(rcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, sq, sq);
+        } else if (p < 0.9f) {
+            // Second blink — quick close
+            float bp = (p - 0.75f) / 0.15f;
+            float sq = (bp < 0.5f) ? bp * 2.0f : (1.0f - bp) * 2.0f;
+            drawEye(lcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, sq, sq);
+            drawEye(rcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, sq, sq);
         } else {
-            // Opening eyes
-            float squeeze = max(0.0f, 1.0f - p);
-            drawEye(lcx, cy, EYE_W, (int)(EYE_H * p), 0, 0, 0, 0, squeeze, squeeze);
-            drawEye(rcx, cy, EYE_W, (int)(EYE_H * p), 0, 0, 0, 0, squeeze, squeeze);
+            // Fully awake
+            drawEye(lcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, 0, 0);
+            drawEye(rcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, 0, 0);
         }
     }
 }
@@ -767,7 +793,7 @@ void setup() {
     currentAnim = ANIM_NONE;
     nextBlinkTime = millis() + 2000 + random(0, 3000);
     nextIdleMove = millis() + 1500 + random(0, 2000);
-    nextSleepTime = millis() + 10000UL + random(0, 15000);
+    nextSleepTime = millis() + 60000UL + random(0, 30000);
 
     Serial.println("Ready!");
 }
@@ -801,12 +827,12 @@ void loop() {
         }
     }
 
-    // End sleep animation after 5500ms
-    if (isSleeping && millis() - animStart > 5500) {
+    // End sleep animation after full duration
+    if (isSleeping && millis() - animStart > SLEEP_TOTAL_MS) {
         isSleeping = false;
         autoBlinkOn = true;
         idleModeOn = true;
-        nextSleepTime = millis() + 15000UL + random(0, 20000);
+        nextSleepTime = millis() + 60000UL + random(0, 30000);
         Serial.println("Woke up!");
     }
 
