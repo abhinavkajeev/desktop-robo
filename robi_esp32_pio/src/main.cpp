@@ -122,9 +122,25 @@ Anim currentAnim = ANIM_NONE;
 unsigned long animStart = 0;
 unsigned long animDuration = 0;
 
-// Sleep animation (random during idle)
+// Sleep animation (very rare — every 3-5 min)
 unsigned long nextSleepTime = 0;
 bool isSleeping = false;
+
+// Emo idle emotions — random short expressions
+enum EmoEmotion {
+    EMO_NONE,
+    EMO_SUSPICIOUS,   // one eye squints, looks sideways
+    EMO_SAD,          // droopy eyes, tear
+    EMO_BORED,        // half-lidded drift
+    EMO_SIGH,         // dramatic close + slow reopen
+    EMO_CURIOUS,      // one eye bigger, peek
+    EMO_DIZZY,        // eyes shake
+    EMO_COUNT = 6     // total emotions (excluding NONE)
+};
+EmoEmotion currentEmotion = EMO_NONE;
+unsigned long emotionStart = 0;
+unsigned long emotionDuration = 0;
+unsigned long nextEmotionTime = 0;
 
 // Smooth transition timer
 unsigned long transitionStart = 0;
@@ -474,6 +490,158 @@ void drawSleepingFace() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  EMO IDLE EMOTIONS — random short expressions
+// ═══════════════════════════════════════════════════════════════════════
+
+void drawEmoEmotion() {
+    unsigned long t = millis() - emotionStart;
+    float p = min(1.0f, (float)t / (float)emotionDuration);
+    int lcx = EYE_L_CX, rcx = EYE_R_CX, cy = EYE_CY;
+
+    switch (currentEmotion) {
+
+    // ── SUSPICIOUS: one eye squints, looks sideways ───────────────
+    case EMO_SUSPICIOUS: {
+        float entry = min(1.0f, p * 4.0f);       // 0→1 in first 25%
+        float hold = (p > 0.75f) ? (p - 0.75f) * 4.0f : 0.0f;  // exit
+        float e = entry * (1.0f - hold);         // ramp up then down
+
+        // Left eye normal, right eye squints
+        float lookX = e * 0.7f;
+        drawEye(lcx, cy, EYE_W, EYE_H, lookX, 0,
+                0, 0, 0, 0);
+        drawEye(rcx, cy, EYE_W, (int)(EYE_H * (1.0f - e * 0.4f)), lookX, 0,
+                (int)(e * 6), 0, 0, 0);
+        break;
+    }
+
+    // ── SAD: droopy eyes + tear ───────────────────────────────
+    case EMO_SAD: {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+
+        // Both eyes droop (top trim increases)
+        int droop = (int)(e * 10);
+        drawEye(lcx, cy + (int)(e * 3), EYE_W, EYE_H, 0, e * 0.5f,
+                droop, 0, 0, 0);
+        drawEye(rcx, cy + (int)(e * 3), EYE_W, EYE_H, 0, e * 0.5f,
+                droop, 0, 0, 0);
+
+        // Tear drop falling from left eye
+        if (e > 0.3f) {
+            float tearP = min(1.0f, (e - 0.3f) / 0.7f);
+            int tearY = cy + (int)(e * 3) + EYE_H / 2 + (int)(tearP * 16);
+            u8g2.drawDisc(lcx + 4, tearY, 2);
+            // Tear trail
+            if (tearP > 0.3f) {
+                u8g2.drawPixel(lcx + 4, tearY - 3);
+                u8g2.drawPixel(lcx + 4, tearY - 5);
+            }
+        }
+        break;
+    }
+
+    // ── BORED: half-lidded, slow drift to side ─────────────────
+    case EMO_BORED: {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+
+        // Half-lidded (top eyelid drops)
+        float lidDroop = e * 0.5f;
+        // Slow drift to one side
+        float driftX = sin(p * PI) * 0.6f;
+
+        drawEye(lcx, cy, EYE_W, EYE_H, driftX, 0,
+                (int)(e * 8), 0, lidDroop, 0);
+        drawEye(rcx, cy, EYE_W, EYE_H, driftX, 0,
+                (int)(e * 8), 0, lidDroop, 0);
+        break;
+    }
+
+    // ── DRAMATIC SIGH: close, hold, slow reopen looking away ─────
+    case EMO_SIGH: {
+        if (p < 0.2f) {
+            // Close eyes slowly
+            float cp = p / 0.2f;
+            drawEye(lcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, cp, cp);
+            drawEye(rcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, cp, cp);
+        } else if (p < 0.6f) {
+            // Held closed — just flat lines with breathing
+            int breathe = (int)(1.5f * sin((p - 0.2f) * 15.0f));
+            drawSleepArc(lcx, cy + breathe, EYE_W/2 + 2, 2);
+            drawSleepArc(rcx, cy + breathe, EYE_W/2 + 2, 2);
+        } else {
+            // Slow reopen, looking away dramatically
+            float op = (p - 0.6f) / 0.4f;
+            float lookAway = (1.0f - op) * -0.8f;
+            drawEye(lcx, cy, EYE_W, EYE_H, lookAway, -0.3f * (1.0f - op),
+                    0, 0, 1.0f - op, 1.0f - op);
+            drawEye(rcx, cy, EYE_W, EYE_H, lookAway, -0.3f * (1.0f - op),
+                    0, 0, 1.0f - op, 1.0f - op);
+        }
+        break;
+    }
+
+    // ── CURIOUS: one eye bigger, peek to side ──────────────────
+    case EMO_CURIOUS: {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+
+        float peek = e * 0.8f;
+        int bigEye = (int)(e * 6);  // right eye grows
+
+        drawEye(lcx, cy, EYE_W, EYE_H, peek, -e * 0.2f,
+                0, 0, 0, 0);
+        drawEye(rcx, cy - (int)(e * 2), EYE_W + bigEye, EYE_H + bigEye,
+                peek, -e * 0.2f, 0, 0, 0, 0);
+        break;
+    }
+
+    // ── DIZZY: eyes shake rapidly ─────────────────────────────
+    case EMO_DIZZY: {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.7f) ? (p - 0.7f) / 0.3f : 0.0f;
+        float e = entry * (1.0f - hold);
+
+        // Rapid X shake + spiral pupils
+        float shake = sin(t / 25.0f) * e * 0.8f;
+        float spiral = cos(t / 40.0f) * e * 0.4f;
+
+        drawEye(lcx + (int)(shake * 4), cy, EYE_W, EYE_H,
+                shake, spiral, 0, 0, 0, 0);
+        drawEye(rcx + (int)(shake * 4), cy, EYE_W, EYE_H,
+                shake, spiral, 0, 0, 0, 0);
+
+        // Spiral circles around eyes for dizziness
+        if (e > 0.3f) {
+            float sa = t / 100.0f;
+            int sr = (int)(8 * e);
+            u8g2.drawPixel(lcx + (int)(sr * cos(sa)), cy - 20 + (int)(sr * sin(sa)));
+            u8g2.drawPixel(rcx + (int)(sr * cos(sa + PI)), cy - 20 + (int)(sr * sin(sa + PI)));
+        }
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+void startRandomEmotion() {
+    // Pick a random emotion (1-6)
+    currentEmotion = (EmoEmotion)(1 + random(0, EMO_COUNT));
+    emotionStart = millis();
+    // Duration: 3-6 seconds
+    emotionDuration = 3000 + random(0, 3000);
+
+    const char* names[] = {"?", "Suspicious", "Sad", "Bored", "Sigh", "Curious", "Dizzy"};
+    Serial.printf("✨ Emo: %s (%lums)\n", names[currentEmotion], emotionDuration);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  DRAW BOTH EYES
 // ═══════════════════════════════════════════════════════════════════════
 void drawEyes() {
@@ -492,6 +660,8 @@ void drawEyes() {
     // Use special rendering for different states
     if (isSleeping) {
         drawSleepingFace();
+    } else if (currentEmotion != EMO_NONE) {
+        drawEmoEmotion();
     } else if (currentState == STATE_HAPPY) {
         drawCuteHappyFace(offsetY);
     } else if (currentState == STATE_EXCITED) {
@@ -805,7 +975,8 @@ void setup() {
     currentAnim = ANIM_NONE;
     nextBlinkTime = millis() + 2000 + random(0, 3000);
     nextIdleMove = millis() + 1500 + random(0, 2000);
-    nextSleepTime = millis() + 60000UL + random(0, 30000);
+    nextSleepTime = millis() + 180000UL + random(0, 120000);  // 3-5 min
+    nextEmotionTime = millis() + 8000UL + random(0, 7000);     // 8-15s
 
     Serial.println("Ready!");
 }
@@ -828,8 +999,8 @@ void loop() {
     // Apply mood/config for current state
     applyState(currentState);
 
-    // Random sleep trigger during idle
-    if (currentState == STATE_IDLE && !isSleeping) {
+    // Random sleep trigger (very rare)
+    if (currentState == STATE_IDLE && !isSleeping && currentEmotion == EMO_NONE) {
         if (millis() >= nextSleepTime) {
             isSleeping = true;
             animStart = millis();
@@ -844,7 +1015,7 @@ void loop() {
         isSleeping = false;
         autoBlinkOn = true;
         idleModeOn = true;
-        nextSleepTime = millis() + 60000UL + random(0, 30000);
+        nextSleepTime = millis() + 180000UL + random(0, 120000);  // 3-5 min
         Serial.println("Woke up!");
     }
 
@@ -855,11 +1026,35 @@ void loop() {
         idleModeOn = true;
     }
 
+    // Random emo emotions during idle (every 8-15s)
+    if (currentState == STATE_IDLE && !isSleeping && currentEmotion == EMO_NONE) {
+        if (millis() >= nextEmotionTime) {
+            startRandomEmotion();
+            autoBlinkOn = false;
+            idleModeOn = false;
+        }
+    }
+
+    // End emo emotion
+    if (currentEmotion != EMO_NONE && millis() - emotionStart > emotionDuration) {
+        currentEmotion = EMO_NONE;
+        autoBlinkOn = true;
+        idleModeOn = true;
+        nextEmotionTime = millis() + 8000UL + random(0, 7000);  // 8-15s
+    }
+
+    // Cancel emotion if state changes
+    if (currentEmotion != EMO_NONE && currentState != STATE_IDLE) {
+        currentEmotion = EMO_NONE;
+        autoBlinkOn = true;
+        idleModeOn = true;
+    }
+
     // Render
     if (currentState == STATE_TALKING) {
         renderTalking();
     } else {
-        if (!isSleeping) {
+        if (!isSleeping && currentEmotion == EMO_NONE) {
             updateAutoBlink();
             updateIdleMode();
         }
