@@ -312,118 +312,54 @@ float getAnimOffsetY() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CUTE HAPPY FACE — Emo-style ^_^ with blush and smile
+//  CUTE FACES — Clean Emo-style crescent eyes
 // ═══════════════════════════════════════════════════════════════════════
+
+// Draw a single crescent eye: filled ellipse masked from top
+void drawCrescentEye(int cx, int cy, int rx, int ry, int cutShift) {
+    // White filled ellipse — the full eye shape
+    u8g2.setDrawColor(1);
+    u8g2.drawFilledEllipse(cx, cy, rx, ry);
+
+    // Black filled ellipse shifted UP — carves out the top,
+    // leaving only a crescent at the bottom (like Emo's happy eyes)
+    u8g2.setDrawColor(0);
+    u8g2.drawFilledEllipse(cx, cy - cutShift, rx + 1, ry);
+    u8g2.setDrawColor(1);
+}
+
 void drawCuteHappyFace(int offsetY) {
     unsigned long t = millis() - stateStart;
 
-    // Damped bounce
-    float damping = max(0.0f, 1.0f - (float)t / 2200.0f);
-    int bounceY = offsetY + (int)(4.0f * sin(t / 80.0f) * damping);
+    // Smooth entry: eyes close from top over 300ms
+    float transition = min(1.0f, (float)t / 300.0f);
+    int cutShift = (int)(transition * 8);   // how much crescent to show
 
-    int lcx = EYE_L_CX, rcx = EYE_R_CX, cy = EYE_CY + bounceY;
-    int hw = EYE_W / 2 + 2;
+    int lcx = EYE_L_CX, rcx = EYE_R_CX, cy = EYE_CY + offsetY;
+    int rx = EYE_W / 2, ry = EYE_H / 2;
 
-    // ── Curved arc eyes (thick ^_^ like Emo) ────────────────────────
-    for (int i = -hw; i <= hw; i++) {
-        float norm = (float)(i * i) / (float)(hw * hw);
-        int y = cy - 6 + (int)(12.0f * (1.0f - norm));
-        // Draw 3px thick arc
-        for (int t = 0; t < 3; t++) {
-            u8g2.drawPixel(lcx + i, y + t);
-            u8g2.drawPixel(rcx + i, y + t);
-        }
-    }
-
-    // ── Rosy blush — dithered circles under each eye ────────────────
-    for (int dx = -4; dx <= 4; dx++) {
-        for (int dy = -4; dy <= 4; dy++) {
-            if (dx*dx + dy*dy <= 16 && (dx + dy) % 2 == 0) {
-                u8g2.drawPixel(lcx - 4 + dx, cy + 12 + dy);
-                u8g2.drawPixel(rcx + 4 + dx, cy + 12 + dy);
-            }
-        }
-    }
-
-    // ── Big happy smile ─────────────────────────────────────────────
-    int smileCx = SCREEN_W / 2, smileCy = cy + 18;
-    for (int i = -12; i <= 12; i++) {
-        float norm = (float)(i * i) / (12.0f * 12.0f);
-        int sy = smileCy - (int)(5.0f * (1.0f - norm));
-        u8g2.drawPixel(smileCx + i, sy);
-        u8g2.drawPixel(smileCx + i, sy + 1);
-    }
-
-    // ── Floating hearts / stars ─────────────────────────────────────
-    if (t < 2500) {
-        float particles[][3] = {
-            {14, 0.16f, 0},     // x, speed (px/ms), start delay
-            {45, 0.12f, 300},
-            {84, 0.18f, 150},
-            {114, 0.14f, 500},
-        };
-        for (int p = 0; p < 4; p++) {
-            int pt = max(0, (int)t - (int)particles[p][2]);
-            if (pt > 0) {
-                int py = 58 - (int)(pt * particles[p][1]);
-                if (py > 2 && py < 60) {
-                    // Draw tiny heart shape: v
-                    int px = (int)particles[p][0];
-                    u8g2.drawPixel(px - 1, py - 1);
-                    u8g2.drawPixel(px + 1, py - 1);
-                    u8g2.drawPixel(px - 2, py);
-                    u8g2.drawPixel(px + 2, py);
-                    u8g2.drawPixel(px - 1, py + 1);
-                    u8g2.drawPixel(px + 1, py + 1);
-                    u8g2.drawPixel(px, py + 2);
-                }
-            }
-        }
-    }
+    // Two clean crescent eyes
+    drawCrescentEye(lcx, cy, rx, ry, cutShift);
+    drawCrescentEye(rcx, cy, rx, ry, cutShift);
 }
 
 void drawCuteExcitedFace(int offsetY) {
     unsigned long t = millis() - stateStart;
 
-    // Faster bounce
-    float damping = max(0.0f, 1.0f - (float)t / 2500.0f);
-    int bounceY = offsetY + (int)(5.0f * sin(t / 60.0f) * damping);
+    // Smooth entry + slight bounce
+    float transition = min(1.0f, (float)t / 250.0f);
+    int cutShift = (int)(transition * 10);  // slightly more closed than happy
 
-    int lcx = EYE_L_CX, rcx = EYE_R_CX, cy = EYE_CY + bounceY;
+    // Gentle bounce that fades
+    float damping = max(0.0f, 1.0f - (float)t / 2000.0f);
+    int bounceY = (int)(3.0f * sin(t / 70.0f) * damping);
 
-    // ── Star eyes ★_★ — spinning ────────────────────────────────────
-    float spin = t / 250.0f;
-    int starR = 12 + (int)(2.0f * sin(t / 80.0f));
-    for (int eye = 0; eye < 2; eye++) {
-        int ecx = (eye == 0) ? lcx : rcx;
-        float dir = (eye == 0) ? 1.0f : -1.0f;
-        for (int i = 0; i < 5; i++) {
-            float step = PI * 2.0f / 5.0f;
-            float oa = -PI/2 + spin * dir + step * i;
-            float ia = oa + step / 2.0f;
-            float na = oa + step;
-            u8g2.drawLine(ecx + (int)(starR * cos(oa)), cy + (int)(starR * sin(oa)),
-                          ecx + (int)(starR * 0.4f * cos(ia)), cy + (int)(starR * 0.4f * sin(ia)));
-            u8g2.drawLine(ecx + (int)(starR * 0.4f * cos(ia)), cy + (int)(starR * 0.4f * sin(ia)),
-                          ecx + (int)(starR * cos(na)), cy + (int)(starR * sin(na)));
-        }
-    }
+    int lcx = EYE_L_CX, rcx = EYE_R_CX, cy = EYE_CY + offsetY + bounceY;
+    int rx = EYE_W / 2, ry = EYE_H / 2;
 
-    // ── Orbiting sparkles ───────────────────────────────────────────
-    for (int i = 0; i < 6; i++) {
-        float a = (t / 350.0f) + i * (PI * 2.0f / 6);
-        int sx = SCREEN_W / 2 + (int)(48.0f * cos(a));
-        int sy = SCREEN_H / 2 + (int)(26.0f * sin(a));
-        if (sx > 3 && sx < 125 && sy > 3 && sy < 61) {
-            int sz = 2 + ((t / 150 + i) % 2);
-            u8g2.drawLine(sx - sz, sy, sx + sz, sy);
-            u8g2.drawLine(sx, sy - sz, sx, sy + sz);
-        }
-    }
-
-    // ── Pulsing O mouth ─────────────────────────────────────────────
-    int mr = 4 + (int)(2.0f * sin(t / 60.0f));
-    u8g2.drawCircle(SCREEN_W / 2, cy + 18, mr);
+    // Two crescent eyes (slightly more closed + bouncing)
+    drawCrescentEye(lcx, cy, rx, ry, cutShift);
+    drawCrescentEye(rcx, cy, rx, ry, cutShift);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
