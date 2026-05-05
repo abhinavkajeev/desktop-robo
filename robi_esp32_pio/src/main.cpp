@@ -58,7 +58,7 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 #define EXTRA_DISPLAY_MS  2000UL    // keep text on screen 2s after speaking
 #define POLL_INTERVAL_MS  2000UL
 #define ANIM_DURATION_MS  2500UL
-#define BLINK_DURATION_MS 150UL
+#define BLINK_DURATION_MS 250UL
 #define TOUCH_THRESHOLD   25000     // adjust based on your setup
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -128,65 +128,83 @@ void connectWiFi() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  DRAWING PRIMITIVES
+//  DRAWING PRIMITIVES — Emo-inspired
 // ═══════════════════════════════════════════════════════════════════════
 
-/* Normal rounded-rectangle eye with pupil */
-void drawEye(int cx, int cy, int w, int h, int pdx, int pdy) {
+/* Eased eye with optional squeeze, highlight, and eyelid.
+   squeeze: 0.0 = fully open, 1.0 = fully closed
+   highlight: draw a specular glint on the pupil */
+void drawEyeFull(int cx, int cy, int w, int h, int pdx, int pdy,
+                 float squeeze, bool highlight) {
     int hw = w / 2, hh = h / 2;
-    u8g2.setDrawColor(1);
-    u8g2.drawRBox(cx - hw, cy - hh, w, h, 6);
 
-    int px = constrain(cx + pdx, cx - hw + PUPIL_R + 2, cx + hw - PUPIL_R - 2);
-    int py = constrain(cy + pdy, cy - hh + PUPIL_R + 2, cy + hh - PUPIL_R - 2);
-    u8g2.setDrawColor(0);
-    u8g2.drawDisc(px, py, PUPIL_R);
+    // Squeeze shrinks height from top and bottom
+    int visH = max(2, (int)(h * (1.0f - squeeze)));
+    int visHH = visH / 2;
+
     u8g2.setDrawColor(1);
+    u8g2.drawRBox(cx - hw, cy - visHH, w, visH, min(6, visH / 2));
+
+    if (squeeze < 0.85f) {
+        // Pupil
+        int px = constrain(cx + pdx, cx - hw + PUPIL_R + 2, cx + hw - PUPIL_R - 2);
+        int py = constrain(cy + pdy, cy - visHH + PUPIL_R + 2, cy + visHH - PUPIL_R - 2);
+        u8g2.setDrawColor(0);
+        u8g2.drawDisc(px, py, PUPIL_R);
+        u8g2.setDrawColor(1);
+
+        // Specular highlight — tiny white dot on pupil (gives depth)
+        if (highlight) {
+            u8g2.drawDisc(px - 2, py - 2, 2);
+        }
+    }
 }
 
-/* Half-closed eye for blink — just a thin slit */
-void drawBlinkEye(int cx, int cy, int w) {
-    int hw = w / 2;
-    u8g2.setDrawColor(1);
-    u8g2.drawRBox(cx - hw, cy - 3, w, 6, 3);
+/* Simple eye wrapper (backward compatible) */
+void drawEye(int cx, int cy, int w, int h, int pdx, int pdy) {
+    drawEyeFull(cx, cy, w, h, pdx, pdy, 0.0f, true);
 }
 
-/* Happy ^_^ arc eyes */
+/* Eyebrow — angled line above eye.
+   angle: negative = angry (\ /), positive = sad (/ \), 0 = neutral (— —) */
+void drawEyebrow(int cx, int ey_top, int w, float angle) {
+    int hw = w / 2 - 2;
+    int y1 = ey_top - 5 + (int)(angle * hw * 0.04f);
+    int y2 = ey_top - 5 - (int)(angle * hw * 0.04f);
+    u8g2.drawLine(cx - hw, y1, cx + hw, y2);
+    u8g2.drawLine(cx - hw, y1 + 1, cx + hw, y2 + 1);  // thicker
+}
+
+/* Happy squint eye — curved arc */
 void drawHappyEye(int cx, int cy, int w) {
     int hw = w / 2;
     u8g2.setDrawColor(1);
-    // Draw a downward arc (happy squint) using multiple lines
     for (int i = -hw; i <= hw; i++) {
-        int y = cy - 4 + (int)(8.0f * (1.0f - (float)(i*i) / (float)(hw*hw)));
+        float norm = (float)(i * i) / (float)(hw * hw);
+        int y = cy - 5 + (int)(10.0f * (1.0f - norm));
         u8g2.drawPixel(cx + i, y);
         u8g2.drawPixel(cx + i, y + 1);
         u8g2.drawPixel(cx + i, y + 2);
     }
 }
 
-/* Star eye ★ for excited state */
+/* Star eye ★ */
 void drawStarEye(int cx, int cy, int r) {
     u8g2.setDrawColor(1);
-    // 5-pointed star
     float angle = -PI / 2;
     float step  = PI * 2.0f / 5.0f;
     for (int i = 0; i < 5; i++) {
-        float outerAngle = angle + step * i;
-        float innerAngle = outerAngle + step / 2.0f;
-        int x1 = cx + (int)(r * cos(outerAngle));
-        int y1 = cy + (int)(r * sin(outerAngle));
-        int x2 = cx + (int)((r * 0.4f) * cos(innerAngle));
-        int y2 = cy + (int)((r * 0.4f) * sin(innerAngle));
-        u8g2.drawLine(x1, y1, x2, y2);
-        // Connect to next outer point
-        float nextOuter = outerAngle + step;
-        int x3 = cx + (int)(r * cos(nextOuter));
-        int y3 = cy + (int)(r * sin(nextOuter));
-        u8g2.drawLine(x2, y2, x3, y3);
+        float oa = angle + step * i;
+        float ia = oa + step / 2.0f;
+        float na = oa + step;
+        u8g2.drawLine(cx + (int)(r * cos(oa)), cy + (int)(r * sin(oa)),
+                      cx + (int)(r * 0.4f * cos(ia)), cy + (int)(r * 0.4f * sin(ia)));
+        u8g2.drawLine(cx + (int)(r * 0.4f * cos(ia)), cy + (int)(r * 0.4f * sin(ia)),
+                      cx + (int)(r * cos(na)), cy + (int)(r * sin(na)));
     }
 }
 
-/* Sparkle particle at (x,y) */
+/* Sparkle particle */
 void drawSparkle(int x, int y, int s) {
     u8g2.setDrawColor(1);
     u8g2.drawLine(x - s, y, x + s, y);
@@ -206,15 +224,29 @@ void drawThinkingDots(int frame) {
     u8g2.drawStr(52, 55, dots.c_str());
 }
 
-/* Draw word-wrapped text inside a padded area.
-   marginX = left/right margin, startY = first line baseline, maxY = bottom limit */
+/* Mouth shapes */
+void drawMouthSmile(int cx, int cy, int w) {
+    // Upward arc
+    for (int i = -w; i <= w; i++) {
+        float norm = (float)(i * i) / (float)(w * w);
+        int y = cy + (int)(3.0f * norm);
+        u8g2.drawPixel(cx + i, y);
+    }
+}
+void drawMouthO(int cx, int cy, int r) {
+    u8g2.drawCircle(cx, cy, r);
+}
+void drawMouthLine(int cx, int cy, int w) {
+    u8g2.drawRBox(cx - w/2, cy - 1, w, 3, 1);
+}
+
+/* Word-wrap text inside a padded area */
 void drawWrappedText(const String& msg, int marginX, int startY, int maxY) {
     u8g2.setFont(u8g2_font_5x8_tr);
     const int charW = 5, lineH = 10;
     const int usableW = 128 - marginX * 2;
     const int maxCols  = usableW / charW;
     int y = startY, start = 0, len = (int)msg.length();
-
     while (start < len && y < maxY) {
         int end = start + maxCols;
         if (end >= len) { end = len; }
@@ -230,7 +262,6 @@ void drawWrappedText(const String& msg, int marginX, int startY, int maxY) {
     }
 }
 
-/* Show centered status text */
 void showStatus(const char* msg) {
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_7x13B_tr);
@@ -240,53 +271,68 @@ void showStatus(const char* msg) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  RENDER EACH STATE
+//  RENDER EACH STATE — Emo-inspired
 // ═══════════════════════════════════════════════════════════════════════
 int frameCounter = 0;
 
 void renderIdle() {
-    // Smooth pupil movement
-    if (millis() - lastPupilMove > 2500UL) {
-        const int pos[] = {-7, -3, 0, 3, 7};
+    unsigned long t = millis();
+
+    // ── Breathing: subtle vertical float ─────────────────────────────
+    float breathe = sin(t / 1200.0f) * 2.0f;         // slow up/down
+    float eyeScale = 1.0f + 0.03f * sin(t / 1500.0f); // tiny size pulse
+
+    int eyeY = EYE_Y + (int)breathe;
+    int ew = (int)(EYE_W * eyeScale);
+    int eh = (int)(EYE_H * eyeScale);
+
+    // ── Smooth pupil with micro-saccades (tiny random jitters) ───────
+    if (t - lastPupilMove > 2500UL) {
+        const int pos[] = {-7, -4, 0, 4, 7};
         targetPX = pos[random(0, 5)];
-        targetPY = pos[random(0, 3)];   // less vertical movement
-        lastPupilMove = millis();
+        targetPY = pos[random(0, 3)];
+        lastPupilMove = t;
     }
-    pupilX += (targetPX - pupilX) * 0.08f;
-    pupilY += (targetPY - pupilY) * 0.08f;
+    // Micro-saccade jitter — like real eyes
+    float jitterX = (random(-10, 11) / 10.0f) * 0.3f;
+    float jitterY = (random(-10, 11) / 10.0f) * 0.2f;
+    pupilX += (targetPX - pupilX) * 0.06f;
+    pupilY += (targetPY - pupilY) * 0.06f;
 
     u8g2.clearBuffer();
-    drawEye(EYE_L_X, EYE_Y, EYE_W, EYE_H, (int)pupilX, (int)pupilY);
-    drawEye(EYE_R_X, EYE_Y, EYE_W, EYE_H, (int)pupilX, (int)pupilY);
+    drawEyeFull(EYE_L_X, eyeY, ew, eh, (int)(pupilX + jitterX), (int)(pupilY + jitterY), 0.0f, true);
+    drawEyeFull(EYE_R_X, eyeY, ew, eh, (int)(pupilX + jitterX), (int)(pupilY + jitterY), 0.0f, true);
 
-    // Cute little mouth — a small subtle line
-    u8g2.drawRBox(56, 48, 16, 4, 2);
+    // Subtle mouth — gentle smile
+    drawMouthSmile(64, 50 + (int)breathe, 8);
 
     u8g2.sendBuffer();
 }
 
 void renderBlink() {
-    u8g2.clearBuffer();
     unsigned long elapsed = millis() - blinkStart;
+    float progress = (float)elapsed / (float)BLINK_DURATION_MS;
+    if (progress > 1.0f) progress = 1.0f;
 
-    if (elapsed < BLINK_DURATION_MS / 3) {
-        // Closing
-        int squeeze = map(elapsed, 0, BLINK_DURATION_MS / 3, 0, EYE_H / 2 - 3);
-        drawEye(EYE_L_X, EYE_Y, EYE_W, EYE_H - squeeze * 2, (int)pupilX, 0);
-        drawEye(EYE_R_X, EYE_Y, EYE_W, EYE_H - squeeze * 2, (int)pupilX, 0);
-    } else if (elapsed < BLINK_DURATION_MS * 2 / 3) {
-        // Closed
-        drawBlinkEye(EYE_L_X, EYE_Y, EYE_W);
-        drawBlinkEye(EYE_R_X, EYE_Y, EYE_W);
+    // Smooth ease-in-out squeeze curve
+    float squeeze;
+    if (progress < 0.35f) {
+        // Closing: ease-in (accelerate)
+        float t = progress / 0.35f;
+        squeeze = t * t;
+    } else if (progress < 0.55f) {
+        // Held closed
+        squeeze = 1.0f;
     } else {
-        // Opening
-        unsigned long openT = elapsed - BLINK_DURATION_MS * 2 / 3;
-        int squeeze = map(openT, 0, BLINK_DURATION_MS / 3, EYE_H / 2 - 3, 0);
-        drawEye(EYE_L_X, EYE_Y, EYE_W, EYE_H - squeeze * 2, (int)pupilX, 0);
-        drawEye(EYE_R_X, EYE_Y, EYE_W, EYE_H - squeeze * 2, (int)pupilX, 0);
+        // Opening: ease-out (decelerate)
+        float t = (progress - 0.55f) / 0.45f;
+        squeeze = 1.0f - (t * (2.0f - t));  // quadratic ease-out
     }
 
-    u8g2.drawRBox(56, 48, 16, 4, 2);
+    u8g2.clearBuffer();
+    drawEyeFull(EYE_L_X, EYE_Y, EYE_W, EYE_H, (int)pupilX, 0, squeeze, squeeze < 0.5f);
+    drawEyeFull(EYE_R_X, EYE_Y, EYE_W, EYE_H, (int)pupilX, 0, squeeze, squeeze < 0.5f);
+    drawMouthLine(64, 50, 12);
     u8g2.sendBuffer();
 
     if (elapsed >= BLINK_DURATION_MS) {
@@ -296,51 +342,71 @@ void renderBlink() {
 
 void renderListening() {
     unsigned long t = millis() - stateStart;
-    float pulse = 1.0f + 0.15f * sin(t / 150.0f);   // gentle pulse
 
+    // Pulsing wide-open eyes
+    float pulse = 1.0f + 0.12f * sin(t / 120.0f);
     int w = (int)(EYE_W * pulse);
-    int h = (int)((EYE_H + 4) * pulse);  // slightly bigger eyes
+    int h = (int)((EYE_H + 6) * pulse);
+    float bounce = 2.0f * sin(t / 200.0f);
 
     u8g2.clearBuffer();
 
-    // Eyes wide open, pupils centered, pulsing
-    drawEye(EYE_L_X, EYE_Y, w, h, 0, 0);
-    drawEye(EYE_R_X, EYE_Y, w, h, 0, 0);
+    // Big alert eyes — pupils centered, highlighted
+    drawEyeFull(EYE_L_X, EYE_Y + (int)bounce, w, h, 0, 0, 0.0f, true);
+    drawEyeFull(EYE_R_X, EYE_Y + (int)bounce, w, h, 0, 0, 0.0f, true);
 
-    // Small "ears up" indicator — two small triangles above
-    int bounce = (int)(2.0f * sin(t / 200.0f));
-    u8g2.drawTriangle(EYE_L_X - 4, EYE_Y - h/2 - 4 + bounce,
-                       EYE_L_X + 4, EYE_Y - h/2 - 4 + bounce,
-                       EYE_L_X, EYE_Y - h/2 - 10 + bounce);
-    u8g2.drawTriangle(EYE_R_X - 4, EYE_Y - h/2 - 4 + bounce,
-                       EYE_R_X + 4, EYE_Y - h/2 - 4 + bounce,
-                       EYE_R_X, EYE_Y - h/2 - 10 + bounce);
+    // Raised eyebrows (curious)
+    drawEyebrow(EYE_L_X, EYE_Y - h/2 + (int)bounce, w, 4);
+    drawEyebrow(EYE_R_X, EYE_Y - h/2 + (int)bounce, w, -4);
 
-    // Open mouth (excited "o")
-    u8g2.drawCircle(64, 50, 4);
+    // Sound wave indicators on sides
+    int wavePhase = (t / 100) % 4;
+    for (int i = 0; i < 3; i++) {
+        int r = 3 + i * 4 + ((wavePhase + i) % 3);
+        int alpha = (i == wavePhase % 3) ? 1 : 0;
+        if (alpha || i < 2) {
+            u8g2.drawCircle(8, 32, r, U8G2_DRAW_UPPER_LEFT | U8G2_DRAW_LOWER_LEFT);
+            u8g2.drawCircle(120, 32, r, U8G2_DRAW_UPPER_RIGHT | U8G2_DRAW_LOWER_RIGHT);
+        }
+    }
+
+    // Open "o" mouth
+    drawMouthO(64, 52 + (int)bounce, 4);
 
     u8g2.sendBuffer();
 }
 
 void renderThinking() {
     unsigned long t = millis() - stateStart;
-    float lookX = -6;   // looking up-left
-    float lookY = -5;
+
+    // Eyes looking up-left, slowly drifting
+    float lookX = -6.0f + 2.0f * sin(t / 800.0f);
+    float lookY = -5.0f + 1.5f * sin(t / 600.0f);
 
     u8g2.clearBuffer();
 
-    // Eyes looking up-left
-    drawEye(EYE_L_X, EYE_Y, EYE_W, EYE_H, (int)lookX, (int)lookY);
-    drawEye(EYE_R_X, EYE_Y, EYE_W, EYE_H, (int)lookX, (int)lookY);
+    // Slightly squinted eyes (one more than other for personality)
+    drawEyeFull(EYE_L_X, EYE_Y, EYE_W, EYE_H - 2, (int)lookX, (int)lookY, 0.08f, true);
+    drawEyeFull(EYE_R_X, EYE_Y, EYE_W, EYE_H, (int)lookX, (int)lookY, 0.0f, true);
 
-    // Thinking dots animation
+    // Furrowed eyebrows (concentrating)
+    drawEyebrow(EYE_L_X, EYE_Y - EYE_H/2, EYE_W, -3);
+    drawEyebrow(EYE_R_X, EYE_Y - EYE_H/2, EYE_W, 3);
+
+    // Animated thinking dots
     drawThinkingDots(t / 40);
 
-    // Small squiggle above head (thought bubble)
-    int bubbleY = 5 + (int)(2.0f * sin(t / 300.0f));
-    u8g2.drawCircle(100, bubbleY, 3);
-    u8g2.drawCircle(108, bubbleY - 2, 2);
-    u8g2.drawDisc(113, bubbleY - 3, 1);
+    // Floating thought bubbles — chain of circles
+    float bobY = 2.0f * sin(t / 300.0f);
+    u8g2.drawDisc(105, 12 + (int)bobY, 4);
+    u8g2.drawDisc(112, 8 + (int)(bobY * 0.7f), 3);
+    u8g2.drawDisc(117, 5 + (int)(bobY * 0.4f), 2);
+
+    // Wavy mouth (uncertain)
+    for (int i = -6; i <= 6; i++) {
+        int my = 52 + (int)(1.5f * sin((t / 200.0f) + i * 0.5f));
+        u8g2.drawPixel(64 + i, my);
+    }
 
     u8g2.sendBuffer();
 }
@@ -348,33 +414,51 @@ void renderThinking() {
 void renderHappy() {
     unsigned long t = millis() - animStart;
 
-    // Bounce effect
-    int bounceY = (int)(3.0f * sin(t / 100.0f) * max(0.0f, 1.0f - t / 2000.0f));
+    // Damped bounce — fast at first, fades out
+    float damping = max(0.0f, 1.0f - (float)t / 2200.0f);
+    int bounceY = (int)(4.0f * sin(t / 80.0f) * damping);
 
     u8g2.clearBuffer();
 
     // Happy squint eyes ^_^
-    drawHappyEye(EYE_L_X, EYE_Y + bounceY, EYE_W);
-    drawHappyEye(EYE_R_X, EYE_Y + bounceY, EYE_W);
+    drawHappyEye(EYE_L_X, EYE_Y + bounceY, EYE_W + 2);
+    drawHappyEye(EYE_R_X, EYE_Y + bounceY, EYE_W + 2);
 
-    // Blush circles
-    u8g2.drawCircle(EYE_L_X - 2, EYE_Y + 10 + bounceY, 4);
-    u8g2.drawCircle(EYE_R_X + 2, EYE_Y + 10 + bounceY, 4);
+    // Rosy blush — dithered circles under eyes
+    for (int dx = -3; dx <= 3; dx++) {
+        for (int dy = -3; dy <= 3; dy++) {
+            if (dx*dx + dy*dy <= 9 && (dx + dy) % 2 == 0) {
+                u8g2.drawPixel(EYE_L_X - 3 + dx, EYE_Y + 12 + bounceY + dy);
+                u8g2.drawPixel(EYE_R_X + 3 + dx, EYE_Y + 12 + bounceY + dy);
+            }
+        }
+    }
 
-    // Wide smile
-    for (int i = -12; i <= 12; i++) {
-        int smileY = 50 + bounceY + (int)(4.0f * (float)(i*i) / 144.0f);
+    // Big happy smile — thick upward arc
+    for (int i = -14; i <= 14; i++) {
+        float norm = (float)(i * i) / (14.0f * 14.0f);
+        int smileY = 48 + bounceY + (int)(5.0f * norm);
         u8g2.drawPixel(64 + i, smileY);
         u8g2.drawPixel(64 + i, smileY + 1);
     }
 
-    // Small hearts floating up
-    if (t < 2000) {
-        int heartY = 10 - (int)(t / 200.0f);
-        if (heartY > -5) {
-            u8g2.setFont(u8g2_font_6x10_tr);
-            u8g2.drawGlyph(10, max(0, heartY + 15), '<');
-            u8g2.drawGlyph(110, max(0, heartY + 10), '3');
+    // Floating hearts at different positions and speeds
+    if (t < 2300) {
+        float heartPositions[][3] = {
+            {12, 0.18f, 0},    // x, speed, phase offset
+            {50, 0.14f, 500},
+            {78, 0.20f, 200},
+            {115, 0.16f, 700},
+        };
+        u8g2.setFont(u8g2_font_6x10_tr);
+        for (int h = 0; h < 4; h++) {
+            int ht = max(0, (int)t - (int)heartPositions[h][2]);
+            if (ht > 0) {
+                int hy = 55 - (int)(ht * heartPositions[h][1]);
+                if (hy > -5 && hy < 60) {
+                    u8g2.drawGlyph((int)heartPositions[h][0], hy, '*');
+                }
+            }
         }
     }
 
@@ -390,26 +474,48 @@ void renderExcited() {
 
     u8g2.clearBuffer();
 
-    // Star eyes ★_★
-    int starR = 10 + (int)(2.0f * sin(t / 100.0f));
-    drawStarEye(EYE_L_X, EYE_Y, starR);
-    drawStarEye(EYE_R_X, EYE_Y, starR);
-
-    // Sparkles around the face
-    int sparklePhase = (t / 100) % 8;
-    int sparklePositions[][2] = {
-        {10, 10}, {118, 10}, {15, 55}, {113, 55},
-        {64, 5},  {30, 58},  {98, 58}, {64, 60}
-    };
-    for (int i = 0; i < 4; i++) {
-        int idx = (sparklePhase + i) % 8;
-        int sz  = 2 + (i % 2);
-        drawSparkle(sparklePositions[idx][0], sparklePositions[idx][1], sz);
+    // Spinning star eyes ★_★ — rotation + size pulse
+    float spinAngle = t / 300.0f;
+    int starR = 10 + (int)(3.0f * sin(t / 80.0f));
+    // Draw rotated stars by offsetting the base angle
+    // Left star
+    for (int i = 0; i < 5; i++) {
+        float step = PI * 2.0f / 5.0f;
+        float oa = -PI/2 + spinAngle + step * i;
+        float ia = oa + step / 2.0f;
+        float na = oa + step;
+        u8g2.drawLine(EYE_L_X + (int)(starR * cos(oa)), EYE_Y + (int)(starR * sin(oa)),
+                      EYE_L_X + (int)(starR * 0.4f * cos(ia)), EYE_Y + (int)(starR * 0.4f * sin(ia)));
+        u8g2.drawLine(EYE_L_X + (int)(starR * 0.4f * cos(ia)), EYE_Y + (int)(starR * 0.4f * sin(ia)),
+                      EYE_L_X + (int)(starR * cos(na)), EYE_Y + (int)(starR * sin(na)));
+    }
+    // Right star
+    for (int i = 0; i < 5; i++) {
+        float step = PI * 2.0f / 5.0f;
+        float oa = -PI/2 - spinAngle + step * i;  // opposite spin
+        float ia = oa + step / 2.0f;
+        float na = oa + step;
+        u8g2.drawLine(EYE_R_X + (int)(starR * cos(oa)), EYE_Y + (int)(starR * sin(oa)),
+                      EYE_R_X + (int)(starR * 0.4f * cos(ia)), EYE_Y + (int)(starR * 0.4f * sin(ia)));
+        u8g2.drawLine(EYE_R_X + (int)(starR * 0.4f * cos(ia)), EYE_Y + (int)(starR * 0.4f * sin(ia)),
+                      EYE_R_X + (int)(starR * cos(na)), EYE_Y + (int)(starR * sin(na)));
     }
 
-    // Wide open mouth "O"
-    int mouthR = 5 + (int)(2.0f * sin(t / 80.0f));
-    u8g2.drawCircle(64, 52, mouthR);
+    // Sparkles — rotating around the face
+    int numSparkles = 6;
+    for (int i = 0; i < numSparkles; i++) {
+        float a = (t / 400.0f) + i * (PI * 2.0f / numSparkles);
+        int sx = 64 + (int)(45.0f * cos(a));
+        int sy = 30 + (int)(25.0f * sin(a));
+        int sz = 2 + ((t / 150 + i) % 3);
+        if (sx > 2 && sx < 126 && sy > 2 && sy < 62) {
+            drawSparkle(sx, sy, sz);
+        }
+    }
+
+    // Excited open mouth
+    int mouthR = 5 + (int)(2.0f * sin(t / 60.0f));
+    drawMouthO(64, 52, mouthR);
 
     u8g2.sendBuffer();
 
