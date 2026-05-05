@@ -1,28 +1,27 @@
 /*
- * Robi ESP32-S3 Mini — FluxGarage RoboEyes Edition
- * ==================================================
- * Uses FluxGarage RoboEyes library for smooth animated expressions.
+ * Robi ESP32-S3 Mini — RoboEyes-Style Animations on U8g2
+ * ========================================================
+ * Smooth animated robot eyes inspired by FluxGarage RoboEyes,
+ * re-implemented on U8g2 for stable SSD1306 support.
  *
- * States:
- *   IDLE       — Default mood, autoblink + idle look-around
- *   LISTENING  — Happy mood, wide eyes, curious look
- *   THINKING   — Tired mood, confused animation, look up
- *   HAPPY      — Happy mood, laugh animation  (single tap)
- *   EXCITED    — Happy mood, flicker + laugh   (double tap)
- *   TALKING    — Word-wrapped text overlay
+ * Features:
+ *   - Smooth eased eye movement with curiosity (outer eye stretches)
+ *   - Auto-blinker with random intervals
+ *   - Idle mode with random eye repositioning
+ *   - Moods: DEFAULT, HAPPY, TIRED, ANGRY
+ *   - Animations: laugh (bounce), confused (shake), wake-up blink
+ *   - Touch: single tap → happy, double tap → excited
+ *   - Text display with typewriter reveal
  *
- * Touch:  GPIO 4 (capacitive)
- * Server: GET /latest, GET /state
+ * Hardware: SSD1306 128×64 I2C (SDA=6, SCL=7), Touch GPIO 4
  */
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Wire.h>
-#include <ArduinoJson.h>          // MUST come before RoboEyes (N/E/S/W macros conflict)
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <FluxGarage_RoboEyes.h>
+#include <U8g2lib.h>
+#include <ArduinoJson.h>
 
 // ═══════════════════════════════════════════════════════════════════════
 //  CONFIG
@@ -35,13 +34,7 @@ static const char* SERVER        = "http://192.168.29.209:5001";
 #define I2C_SCL   7
 #define TOUCH_PIN 4
 
-// ═══════════════════════════════════════════════════════════════════════
-//  DISPLAY + ROBOEYES
-// ═══════════════════════════════════════════════════════════════════════
-#define SCREEN_W 128
-#define SCREEN_H 64
-Adafruit_SSD1306 display(SCREEN_W, SCREEN_H, &Wire, -1);
-RoboEyes<Adafruit_SSD1306> roboEyes(display);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  TIMING
@@ -49,8 +42,45 @@ RoboEyes<Adafruit_SSD1306> roboEyes(display);
 #define MS_PER_WORD       330UL
 #define EXTRA_DISPLAY_MS  2000UL
 #define POLL_INTERVAL_MS  2000UL
-#define ANIM_DURATION_MS  2500UL
 #define TOUCH_THRESHOLD   25000
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EYE CONFIGURATION (RoboEyes-style)
+// ═══════════════════════════════════════════════════════════════════════
+#define EYE_W         36    // eye width
+#define EYE_H         36    // eye height (default mood)
+#define EYE_RADIUS    8     // border radius
+#define EYE_SPACE     10    // space between eyes
+#define PUPIL_W       12    // pupil width
+#define PUPIL_H       12    // pupil height
+#define SCREEN_W      128
+#define SCREEN_H      64
+
+// Eye center positions (calculated)
+#define EYE_L_CX  (SCREEN_W / 2 - EYE_SPACE / 2 - EYE_W / 2)
+#define EYE_R_CX  (SCREEN_W / 2 + EYE_SPACE / 2 + EYE_W / 2)
+#define EYE_CY    (SCREEN_H / 2)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MOOD SYSTEM
+// ═══════════════════════════════════════════════════════════════════════
+enum Mood { MOOD_DEFAULT, MOOD_HAPPY, MOOD_TIRED, MOOD_ANGRY };
+Mood currentMood = MOOD_DEFAULT;
+
+// Mood modifiers: changes to eye shape per mood
+struct MoodParams {
+    int topTrimL, topTrimR;     // pixels trimmed from top of each eye
+    int bottomTrimL, bottomTrimR; // pixels trimmed from bottom
+};
+
+MoodParams getMoodParams(Mood m) {
+    switch (m) {
+        case MOOD_HAPPY:  return {0, 0, 8, 8};    // bottom trimmed → ^_^ look
+        case MOOD_TIRED:  return {8, 8, 0, 0};     // top trimmed → droopy
+        case MOOD_ANGRY:  return {10, 10, 0, 0};   // heavy top trim → angry squint
+        default:          return {0, 0, 0, 0};
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 //  STATE MACHINE
@@ -64,13 +94,37 @@ enum RobiState {
     STATE_TALKING
 };
 
-RobiState currentState  = STATE_IDLE;
-RobiState prevAnimState = STATE_IDLE;   // state before tap animation
+RobiState currentState = STATE_IDLE;
 bool  wifiOK = false;
 
-// Animation
-unsigned long animStart   = 0;
-unsigned long stateStart  = 0;
+// Eye animation state
+float eyeTargetX = 0, eyeTargetY = 0;   // target pupil position (-1.0 to 1.0)
+float eyeCurrentX = 0, eyeCurrentY = 0; // current smoothed position
+float eyeLidTop = 0, eyeLidBot = 0;     // 0 = open, 1 = closed (for blink)
+float eyeLidTargetTop = 0, eyeLidTargetBot = 0;
+
+// Auto-blinker
+bool        autoBlinkOn = true;
+unsigned long nextBlinkTime = 0;
+bool        isBlinking = false;
+unsigned long blinkStartTime = 0;
+
+// Idle mode
+bool        idleModeOn = true;
+unsigned long nextIdleMove = 0;
+
+// Curiosity
+bool        curiosityOn = true;
+
+// One-shot animations
+enum Anim { ANIM_NONE, ANIM_LAUGH, ANIM_CONFUSED, ANIM_WAKEUP };
+Anim currentAnim = ANIM_NONE;
+unsigned long animStart = 0;
+unsigned long animDuration = 0;
+
+// State timing
+unsigned long stateStart = 0;
+RobiState prevAnimState = STATE_IDLE;
 
 // Text
 String        aiText      = "";
@@ -85,9 +139,6 @@ unsigned long doubleTapWindow  = 400;
 
 // Polling
 unsigned long lastPoll = 0;
-
-// Track if we already applied mood for this state
-RobiState lastAppliedState = STATE_IDLE;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  WIFI
@@ -110,18 +161,208 @@ void connectWiFi() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  TEXT DISPLAY (uses Adafruit GFX directly when in TALKING state)
+//  EASING FUNCTION
+// ═══════════════════════════════════════════════════════════════════════
+float lerp(float current, float target, float speed) {
+    return current + (target - current) * speed;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DRAW SINGLE EYE (RoboEyes style)
+// ═══════════════════════════════════════════════════════════════════════
+void drawEye(int cx, int cy, int w, int h, float pupilX, float pupilY,
+             int topTrim, int bottomTrim, float lidTop, float lidBot) {
+    int hw = w / 2, hh = h / 2;
+
+    // Effective height after mood trims
+    int effectiveTop = cy - hh + topTrim;
+    int effectiveBot = cy + hh - bottomTrim;
+    int effectiveH = effectiveBot - effectiveTop;
+    if (effectiveH < 4) effectiveH = 4;
+
+    // Apply eyelid (blink) — shrink from top/bottom
+    int lidTopPx = (int)(lidTop * effectiveH / 2);
+    int lidBotPx = (int)(lidBot * effectiveH / 2);
+    int drawTop = effectiveTop + lidTopPx;
+    int drawBot = effectiveBot - lidBotPx;
+    int drawH = drawBot - drawTop;
+    if (drawH < 2) drawH = 2;
+
+    int radius = min(EYE_RADIUS, drawH / 2);
+
+    // Draw eye outline (filled rounded rect)
+    u8g2.setDrawColor(1);
+    u8g2.drawRBox(cx - hw, drawTop, w, drawH, radius);
+
+    // Pupil position — map normalized (-1 to 1) to pixel offsets
+    if (drawH > PUPIL_H + 4) {
+        int maxPupilX = hw - PUPIL_W / 2 - 3;
+        int maxPupilY = drawH / 2 - PUPIL_H / 2 - 2;
+        int px = cx + (int)(pupilX * maxPupilX);
+        int py = drawTop + drawH / 2 + (int)(pupilY * maxPupilY);
+
+        u8g2.setDrawColor(0);
+        u8g2.drawRBox(px - PUPIL_W / 2, py - PUPIL_H / 2, PUPIL_W, PUPIL_H, 3);
+
+        // Specular highlight
+        u8g2.setDrawColor(1);
+        u8g2.drawDisc(px - 3, py - 3, 2);
+    }
+    u8g2.setDrawColor(1);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  AUTO-BLINKER
+// ═══════════════════════════════════════════════════════════════════════
+void updateAutoBlink() {
+    if (!autoBlinkOn) return;
+
+    unsigned long now = millis();
+
+    if (!isBlinking && now >= nextBlinkTime) {
+        isBlinking = true;
+        blinkStartTime = now;
+        eyeLidTargetTop = 1.0f;
+        eyeLidTargetBot = 1.0f;
+    }
+
+    if (isBlinking) {
+        unsigned long elapsed = now - blinkStartTime;
+        if (elapsed < 80) {
+            // Closing
+            eyeLidTargetTop = 1.0f;
+            eyeLidTargetBot = 1.0f;
+        } else if (elapsed < 180) {
+            // Opening
+            eyeLidTargetTop = 0.0f;
+            eyeLidTargetBot = 0.0f;
+        } else {
+            isBlinking = false;
+            eyeLidTargetTop = 0.0f;
+            eyeLidTargetBot = 0.0f;
+            // Schedule next blink: 2-5 seconds
+            nextBlinkTime = now + 2000 + random(0, 3000);
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  IDLE MODE — random eye repositioning
+// ═══════════════════════════════════════════════════════════════════════
+void updateIdleMode() {
+    if (!idleModeOn) return;
+
+    unsigned long now = millis();
+    if (now >= nextIdleMove) {
+        // Random position — normalized -0.8 to 0.8
+        eyeTargetX = (random(-80, 81)) / 100.0f;
+        eyeTargetY = (random(-40, 41)) / 100.0f;
+        nextIdleMove = now + 1500 + random(0, 2500);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ONE-SHOT ANIMATIONS
+// ═══════════════════════════════════════════════════════════════════════
+void startAnim(Anim a, unsigned long duration) {
+    currentAnim = a;
+    animStart = millis();
+    animDuration = duration;
+}
+
+// Returns a Y offset for the current animation frame
+float getAnimOffsetY() {
+    if (currentAnim == ANIM_NONE) return 0;
+    unsigned long t = millis() - animStart;
+    if (t > animDuration) {
+        currentAnim = ANIM_NONE;
+        return 0;
+    }
+    float progress = (float)t / (float)animDuration;
+
+    switch (currentAnim) {
+        case ANIM_LAUGH: {
+            // Rapid vertical bouncing that decays
+            float decay = 1.0f - progress;
+            return sin(t / 40.0f) * 4.0f * decay;
+        }
+        case ANIM_CONFUSED: {
+            // Horizontal shaking
+            float decay = 1.0f - progress;
+            eyeCurrentX = sin(t / 30.0f) * 0.6f * decay;
+            return 0;
+        }
+        case ANIM_WAKEUP: {
+            // Eyes snap open from closed
+            if (progress < 0.3f) {
+                eyeLidTargetTop = 1.0f - (progress / 0.3f);
+                eyeLidTargetBot = 1.0f - (progress / 0.3f);
+            } else if (progress < 0.5f) {
+                // Overshoot — slightly past open
+                eyeLidTargetTop = 0.0f;
+                eyeLidTargetBot = 0.0f;
+            } else {
+                eyeLidTargetTop = 0.0f;
+                eyeLidTargetBot = 0.0f;
+            }
+            return 0;
+        }
+        default: return 0;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DRAW BOTH EYES
+// ═══════════════════════════════════════════════════════════════════════
+void drawEyes() {
+    // Smooth easing for all parameters
+    eyeCurrentX = lerp(eyeCurrentX, eyeTargetX, 0.08f);
+    eyeCurrentY = lerp(eyeCurrentY, eyeTargetY, 0.08f);
+    eyeLidTop = lerp(eyeLidTop, eyeLidTargetTop, 0.25f);
+    eyeLidBot = lerp(eyeLidBot, eyeLidTargetBot, 0.25f);
+
+    // Get mood shape modifiers
+    MoodParams mp = getMoodParams(currentMood);
+
+    // Curiosity: outer eye gets taller when looking sideways
+    int curiosityL = 0, curiosityR = 0;
+    if (curiosityOn) {
+        if (eyeCurrentX < -0.3f) curiosityL = (int)(abs(eyeCurrentX) * 6);
+        if (eyeCurrentX >  0.3f) curiosityR = (int)(abs(eyeCurrentX) * 6);
+    }
+
+    // Animation offset
+    float animY = getAnimOffsetY();
+    int offsetY = (int)animY;
+
+    u8g2.clearBuffer();
+
+    // Left eye
+    drawEye(EYE_L_CX, EYE_CY + offsetY,
+            EYE_W, EYE_H + curiosityL,
+            eyeCurrentX, eyeCurrentY,
+            mp.topTrimL, mp.bottomTrimL,
+            eyeLidTop, eyeLidBot);
+
+    // Right eye
+    drawEye(EYE_R_CX, EYE_CY + offsetY,
+            EYE_W, EYE_H + curiosityR,
+            eyeCurrentX, eyeCurrentY,
+            mp.topTrimR, mp.bottomTrimR,
+            eyeLidTop, eyeLidBot);
+
+    u8g2.sendBuffer();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TEXT DISPLAY
 // ═══════════════════════════════════════════════════════════════════════
 void drawWrappedText(const String& msg, int marginX, int startY, int maxY) {
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setTextWrap(false);
-
-    const int charW = 6, lineH = 10;
-    const int usableW = SCREEN_W - marginX * 2;
+    u8g2.setFont(u8g2_font_5x8_tr);
+    const int charW = 5, lineH = 10;
+    const int usableW = 128 - marginX * 2;
     const int maxCols  = usableW / charW;
     int y = startY, start = 0, len = (int)msg.length();
-
     while (start < len && y < maxY) {
         int end = start + maxCols;
         if (end >= len) { end = len; }
@@ -131,8 +372,7 @@ void drawWrappedText(const String& msg, int marginX, int startY, int maxY) {
         }
         String line = msg.substring(start, end);
         line.trim();
-        display.setCursor(marginX, y);
-        display.print(line);
+        u8g2.drawStr(marginX, y, line.c_str());
         y += lineH;
         start = end;
     }
@@ -140,116 +380,102 @@ void drawWrappedText(const String& msg, int marginX, int startY, int maxY) {
 
 void renderTalking() {
     unsigned long elapsed = millis() - textStart;
-    display.clearDisplay();
+    u8g2.clearBuffer();
 
     // Rounded border frame
-    display.drawRoundRect(0, 0, 128, 64, 4, SSD1306_WHITE);
+    u8g2.setDrawColor(1);
+    u8g2.drawRFrame(0, 0, 128, 64, 4);
 
     // Header bar
-    display.fillRect(0, 0, 128, 13, SSD1306_WHITE);
-    display.setTextColor(SSD1306_BLACK);
-    display.setTextSize(1);
-    display.setCursor(5, 3);
-    display.print("* Robi says:");
-    display.setTextColor(SSD1306_WHITE);
-
-    // Separator
-    display.drawFastHLine(2, 14, 124, SSD1306_WHITE);
+    u8g2.drawBox(0, 0, 128, 13);
+    u8g2.setDrawColor(0);
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(5, 10, "\x04 Robi says:");
+    u8g2.setDrawColor(1);
+    u8g2.drawHLine(2, 14, 124);
 
     // Typewriter reveal
     int charsToShow = (int)(elapsed / 25);
     if (charsToShow > (int)aiText.length()) charsToShow = aiText.length();
     String visibleText = aiText.substring(0, charsToShow);
+    drawWrappedText(visibleText, 5, 25, 60);
 
-    drawWrappedText(visibleText, 5, 18, 58);
-
-    // Typing indicator dots
+    // Typing dots
     if (charsToShow < (int)aiText.length()) {
         int dotPhase = (elapsed / 300) % 3;
         for (int i = 0; i <= dotPhase; i++) {
-            display.fillCircle(58 + i * 6, 59, 1, SSD1306_WHITE);
+            u8g2.drawDisc(58 + i * 6, 60, 1);
         }
     }
 
-    display.display();
+    u8g2.sendBuffer();
 
     if (millis() - textStart > textDisplayDuration) {
         currentState = STATE_IDLE;
-        lastAppliedState = STATE_TALKING; // force re-apply idle mood
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  APPLY MOOD / EXPRESSION for each state
+//  STATE MANAGEMENT
 // ═══════════════════════════════════════════════════════════════════════
-void applyStateMood(RobiState state) {
+RobiState lastAppliedState = (RobiState)99;  // force first apply
+
+void applyState(RobiState state) {
     if (state == lastAppliedState) return;
     lastAppliedState = state;
+    stateStart = millis();
 
     switch (state) {
         case STATE_IDLE:
-            Serial.println("Mood: IDLE");
-            roboEyes.setMood(DEFAULT);
-            roboEyes.setPosition(DEFAULT);
-            roboEyes.setAutoblinker(ON, 3, 2);
-            roboEyes.setIdleMode(ON, 2, 3);
-            roboEyes.setCuriosity(ON);
-            roboEyes.setHFlicker(OFF, 0);
-            roboEyes.setVFlicker(OFF, 0);
-            roboEyes.open();
+            Serial.println("→ IDLE");
+            currentMood = MOOD_DEFAULT;
+            autoBlinkOn = true;
+            idleModeOn = true;
+            curiosityOn = true;
+            eyeTargetX = 0; eyeTargetY = 0;
+            eyeLidTargetTop = 0; eyeLidTargetBot = 0;
             break;
 
         case STATE_LISTENING:
-            Serial.println("Mood: LISTENING");
-            roboEyes.setMood(HAPPY);
-            roboEyes.setPosition(DEFAULT);
-            roboEyes.setAutoblinker(OFF, 0, 0);
-            roboEyes.setIdleMode(OFF, 0, 0);
-            roboEyes.setCuriosity(ON);
-            roboEyes.setHFlicker(OFF, 0);
-            roboEyes.setVFlicker(OFF, 0);
-            roboEyes.open();
-            // Trigger a single blink as "wake up" acknowledgment
-            roboEyes.blink();
+            Serial.println("→ LISTENING");
+            currentMood = MOOD_HAPPY;
+            autoBlinkOn = false;
+            idleModeOn = false;
+            curiosityOn = true;
+            eyeTargetX = 0; eyeTargetY = 0;
+            // Wake-up: eyes start closed, snap open
+            eyeLidTop = 1.0f; eyeLidBot = 1.0f;
+            startAnim(ANIM_WAKEUP, 500);
             break;
 
         case STATE_THINKING:
-            Serial.println("Mood: THINKING");
-            roboEyes.setMood(TIRED);
-            roboEyes.setPosition(NW);
-            roboEyes.setAutoblinker(OFF, 0, 0);
-            roboEyes.setIdleMode(OFF, 0, 0);
-            roboEyes.setCuriosity(OFF);
-            roboEyes.setHFlicker(OFF, 0);
-            roboEyes.setVFlicker(OFF, 0);
-            // Play confused animation
-            roboEyes.anim_confused();
+            Serial.println("→ THINKING");
+            currentMood = MOOD_TIRED;
+            autoBlinkOn = false;
+            idleModeOn = false;
+            curiosityOn = false;
+            eyeTargetX = -0.6f; eyeTargetY = -0.4f;  // look up-left
+            startAnim(ANIM_CONFUSED, 800);
             break;
 
         case STATE_HAPPY:
-            Serial.println("Mood: HAPPY");
-            roboEyes.setMood(HAPPY);
-            roboEyes.setPosition(DEFAULT);
-            roboEyes.setAutoblinker(OFF, 0, 0);
-            roboEyes.setIdleMode(OFF, 0, 0);
-            roboEyes.setCuriosity(OFF);
-            roboEyes.setHFlicker(OFF, 0);
-            roboEyes.setVFlicker(OFF, 0);
-            // Laugh animation
-            roboEyes.anim_laugh();
+            Serial.println("→ HAPPY");
+            currentMood = MOOD_HAPPY;
+            autoBlinkOn = false;
+            idleModeOn = false;
+            curiosityOn = false;
+            eyeTargetX = 0; eyeTargetY = 0;
+            startAnim(ANIM_LAUGH, 1500);
             break;
 
         case STATE_EXCITED:
-            Serial.println("Mood: EXCITED");
-            roboEyes.setMood(HAPPY);
-            roboEyes.setPosition(DEFAULT);
-            roboEyes.setAutoblinker(OFF, 0, 0);
-            roboEyes.setIdleMode(OFF, 0, 0);
-            roboEyes.setCuriosity(OFF);
-            roboEyes.setHFlicker(ON, 3);
-            roboEyes.setVFlicker(ON, 2);
-            // Laugh animation
-            roboEyes.anim_laugh();
+            Serial.println("→ EXCITED");
+            currentMood = MOOD_HAPPY;
+            autoBlinkOn = false;
+            idleModeOn = false;
+            curiosityOn = false;
+            eyeTargetX = 0; eyeTargetY = 0;
+            startAnim(ANIM_LAUGH, 2000);
             break;
 
         default:
@@ -258,7 +484,7 @@ void applyStateMood(RobiState state) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  TOUCH DETECTION
+//  TOUCH
 // ═══════════════════════════════════════════════════════════════════════
 void handleTouch() {
     uint32_t val = touchRead(TOUCH_PIN);
@@ -278,17 +504,13 @@ void handleTouch() {
 
     if (tapCount > 0 && millis() - lastTouchTime > doubleTapWindow) {
         if (tapCount >= 2) {
-            Serial.println("Double tap → EXCITED");
             prevAnimState = currentState;
-            currentState  = STATE_EXCITED;
-            animStart     = millis();
-            lastAppliedState = STATE_IDLE; // force re-apply
+            currentState = STATE_EXCITED;
+            lastAppliedState = (RobiState)99;
         } else {
-            Serial.println("Single tap → HAPPY");
             prevAnimState = currentState;
-            currentState  = STATE_HAPPY;
-            animStart     = millis();
-            lastAppliedState = STATE_IDLE; // force re-apply
+            currentState = STATE_HAPPY;
+            lastAppliedState = (RobiState)99;
         }
         tapCount = 0;
     }
@@ -312,31 +534,27 @@ void pollServer() {
     if (!wifiOK || millis() - lastPoll < POLL_INTERVAL_MS) return;
     lastPoll = millis();
 
-    // Check state changes
+    // State changes
     String stateBody = httpGet(String(SERVER) + "/state");
     if (stateBody.length() > 0) {
         JsonDocument doc;
         if (deserializeJson(doc, stateBody) == DeserializationError::Ok) {
             String s = doc["state"].as<String>();
-            Serial.print("State → "); Serial.println(s);
-            if (s == "listening") {
+            if (s == "listening" && currentState != STATE_LISTENING) {
                 currentState = STATE_LISTENING;
-                stateStart = millis();
-                lastAppliedState = STATE_IDLE; // force re-apply
-            } else if (s == "thinking") {
+                lastAppliedState = (RobiState)99;
+            } else if (s == "thinking" && currentState != STATE_THINKING) {
                 currentState = STATE_THINKING;
-                stateStart = millis();
-                lastAppliedState = STATE_IDLE;
-            } else if (s == "idle") {
-                if (currentState == STATE_LISTENING || currentState == STATE_THINKING) {
-                    currentState = STATE_IDLE;
-                    lastAppliedState = STATE_THINKING; // force re-apply
-                }
+                lastAppliedState = (RobiState)99;
+            } else if (s == "idle" &&
+                       (currentState == STATE_LISTENING || currentState == STATE_THINKING)) {
+                currentState = STATE_IDLE;
+                lastAppliedState = (RobiState)99;
             }
         }
     }
 
-    // Check for AI reply
+    // AI reply
     if (currentState != STATE_HAPPY && currentState != STATE_EXCITED) {
         String textBody = httpGet(String(SERVER) + "/latest");
         if (textBody.length() > 0) {
@@ -363,64 +581,42 @@ void pollServer() {
 void setup() {
     Serial.begin(115200);
     delay(300);
-    Serial.println("\n=== Robi (RoboEyes) ===");
+    Serial.println("\n=== Robi (RoboEyes-style on U8g2) ===");
 
-    Wire.begin(I2C_SDA, I2C_SCL);
+    u8g2.begin();
+    u8g2.setContrast(200);
 
-    // Initialize display
-    if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-        Serial.println("SSD1306 failed!");
-        while (1) delay(100);
-    }
-    display.clearDisplay();
-    display.display();
+    // Boot animation: eyes closed
+    eyeLidTop = 1.0f; eyeLidBot = 1.0f;
+    eyeLidTargetTop = 1.0f; eyeLidTargetBot = 1.0f;
+    drawEyes();
+    delay(400);
 
-    // Initialize RoboEyes
-    roboEyes.begin(SCREEN_W, SCREEN_H, 100);
-
-    // Configure eye shape
-    roboEyes.setWidth(36, 36);
-    roboEyes.setHeight(36, 36);
-    roboEyes.setBorderradius(8, 8);
-    roboEyes.setSpacebetween(10);
-    roboEyes.setCyclops(OFF);
-    roboEyes.setCuriosity(ON);
-    roboEyes.setAutoblinker(ON, 3, 2);
-    roboEyes.setIdleMode(ON, 2, 3);
-
-    // Boot: eyes closed → open
-    roboEyes.close();
-    roboEyes.update();
-    delay(500);
-    roboEyes.open();
-
-    // Show boot status
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(20, 28);
-    display.print("Connecting...");
-    display.display();
-    delay(300);
+    // Show connecting text
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_7x13B_tr);
+    u8g2.drawStr(18, 35, "Connecting...");
+    u8g2.sendBuffer();
 
     connectWiFi();
 
-    // Happy blink on connect
-    roboEyes.setMood(HAPPY);
-    roboEyes.open();
-    for (int i = 0; i < 10; i++) {
-        roboEyes.update();
-        delay(30);
-    }
-    roboEyes.anim_laugh();
-    for (int i = 0; i < 30; i++) {
-        roboEyes.update();
-        delay(30);
+    // Happy wake-up
+    currentMood = MOOD_HAPPY;
+    eyeLidTargetTop = 0; eyeLidTargetBot = 0;
+    startAnim(ANIM_LAUGH, 1000);
+    for (int i = 0; i < 40; i++) {
+        updateAutoBlink();
+        getAnimOffsetY();
+        drawEyes();
+        delay(25);
     }
 
     // Back to default
-    roboEyes.setMood(DEFAULT);
-    roboEyes.setPosition(DEFAULT);
+    currentMood = MOOD_DEFAULT;
+    currentAnim = ANIM_NONE;
+    nextBlinkTime = millis() + 2000 + random(0, 3000);
+    nextIdleMove = millis() + 1500 + random(0, 2000);
+
     Serial.println("Ready!");
 }
 
@@ -431,22 +627,24 @@ void loop() {
     handleTouch();
     pollServer();
 
-    // Handle tap animation timeout
+    // Tap animation timeout → back to idle
     if ((currentState == STATE_HAPPY || currentState == STATE_EXCITED) &&
-        millis() - animStart > ANIM_DURATION_MS) {
+        millis() - stateStart > 2500) {
         currentState = STATE_IDLE;
-        lastAppliedState = STATE_HAPPY; // force re-apply idle
+        lastAppliedState = (RobiState)99;
     }
 
-    // Apply mood for current state
-    applyStateMood(currentState);
+    // Apply mood/config for current state
+    applyState(currentState);
 
     // Render
     if (currentState == STATE_TALKING) {
         renderTalking();
     } else {
-        roboEyes.update();
+        updateAutoBlink();
+        updateIdleMode();
+        drawEyes();
     }
 
-    delay(10);
+    delay(16);   // ~60 FPS
 }
