@@ -126,6 +126,10 @@ unsigned long animDuration = 0;
 unsigned long nextSleepTime = 0;
 bool isSleeping = false;
 
+// Smooth transition timer
+unsigned long transitionStart = 0;
+#define TRANSITION_MS 300
+
 // State timing
 unsigned long stateStart = 0;
 RobiState prevAnimState = STATE_IDLE;
@@ -330,8 +334,11 @@ void drawCrescentEye(int cx, int cy, int rx, int ry, int cutShift) {
 
 void drawCuteHappyFace(int offsetY) {
     unsigned long t = millis() - stateStart;
-    float transition = min(1.0f, (float)t / 300.0f);
-    int cutShift = (int)(transition * 8);
+
+    // Smooth entry: ramp up over 300ms
+    float entry = min(1.0f, (float)t / 300.0f);
+    int cutShift = (int)(entry * 8);
+
     int lcx = EYE_L_CX, rcx = EYE_R_CX, cy = EYE_CY + offsetY;
     int rx = EYE_W / 2, ry = EYE_H / 2;
     drawCrescentEye(lcx, cy, rx, ry, cutShift);
@@ -572,6 +579,9 @@ void renderTalking() {
     u8g2.sendBuffer();
 
     if (millis() - textStart > textDisplayDuration) {
+        // Smooth exit: close eyes briefly before going to idle
+        eyeLidTargetTop = 1.0f;
+        eyeLidTargetBot = 1.0f;
         currentState = STATE_IDLE;
     }
 }
@@ -585,6 +595,7 @@ void applyState(RobiState state) {
     if (state == lastAppliedState) return;
     lastAppliedState = state;
     stateStart = millis();
+    transitionStart = millis();
 
     switch (state) {
         case STATE_IDLE:
@@ -594,6 +605,7 @@ void applyState(RobiState state) {
             idleModeOn = true;
             curiosityOn = true;
             eyeTargetX = 0; eyeTargetY = 0;
+            // Smooth return: let lerp bring lids back to open
             eyeLidTargetTop = 0; eyeLidTargetBot = 0;
             break;
 
@@ -604,9 +616,9 @@ void applyState(RobiState state) {
             idleModeOn = false;
             curiosityOn = true;
             eyeTargetX = 0; eyeTargetY = 0;
-            // Wake-up: eyes start closed, snap open
+            // Quick wake-up: eyes start closed, snap open (shorter)
             eyeLidTop = 1.0f; eyeLidBot = 1.0f;
-            startAnim(ANIM_WAKEUP, 500);
+            startAnim(ANIM_WAKEUP, 250);
             break;
 
         case STATE_THINKING:
