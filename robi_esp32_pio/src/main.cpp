@@ -403,25 +403,14 @@ void drawSleepingFace() {
     int lcx = EYE_L_CX, rcx = EYE_R_CX, cy = EYE_CY;
     int rx = EYE_W / 2, ry = EYE_H / 2;
 
-    // ── PHASE 1: YAWN (0 – 2s) ─────────────────────────────────────
+    // ── PHASE 1: DRIFT TO SLEEP (0 – 2s) ─────────────────────────
     if (t < YAWN_END_MS) {
         float p = (float)t / (float)YAWN_END_MS;
 
-        // Eyes slowly droop into crescents
+        // Eyes slowly close into crescents (no mouth/yawn)
         int cutShift = (int)(p * 12);
         drawCrescentEye(lcx, cy, rx, ry, cutShift);
         drawCrescentEye(rcx, cy, rx, ry, cutShift);
-
-        // Mouth opens into an oval (yawning)
-        int mouthRx = (int)(p * 6);
-        int mouthRy = (int)(p * 9);
-        if (mouthRx > 1) {
-            u8g2.drawEllipse(SCREEN_W / 2, cy + 22, mouthRx, mouthRy);
-            // Fill the mouth oval slightly for depth
-            if (mouthRx > 3) {
-                u8g2.drawEllipse(SCREEN_W / 2, cy + 22, mouthRx - 2, mouthRy - 2);
-            }
-        }
 
     // ── PHASE 2: SLEEP (2s – 27s) ─────────────────────────────────
     } else if (t < WAKE_START_MS) {
@@ -992,6 +981,20 @@ void updateMotion() {
     if (gyroLeanY < -1.0f) gyroLeanY = -1.0f;
 
     float totalAccel = sqrt(ax*ax + ay*ay + az*az);
+    float tiltMag = sqrt(gyroLeanX*gyroLeanX + gyroLeanY*gyroLeanY);
+
+    // If significant tilt detected, cancel current emotion and delay next one
+    if (tiltMag > 0.15f && currentEmotion != EMO_NONE && currentEmotion != EMO_DIZZY) {
+        currentEmotion = EMO_NONE;
+        autoBlinkOn = true;
+        idleModeOn = true;
+        nextEmotionTime = millis() + 6000UL + random(0, 4000);  // delay next emotion
+    }
+
+    // Suppress new emotions while tilting
+    if (tiltMag > 0.15f) {
+        nextEmotionTime = max(nextEmotionTime, millis() + 3000UL);
+    }
 
     // Debug every 500ms
     static unsigned long lastDebug = 0;
@@ -1001,11 +1004,14 @@ void updateMotion() {
                       ax, ay, az, totalAccel, gyroLeanX, gyroLeanY);
     }
 
-    if (totalAccel > 18.0f && currentState == STATE_IDLE && currentEmotion == EMO_NONE) {
-        startRandomEmotion();
-        currentEmotion = EMO_STARTLED;
-        emotionDuration = 2000;
-        Serial.println("!!! Startled by motion !!!");
+    // Shaking → dizzy emotion
+    if (totalAccel > 18.0f && currentState == STATE_IDLE) {
+        currentEmotion = EMO_DIZZY;
+        emotionStart = millis();
+        emotionDuration = 2500;
+        autoBlinkOn = false;
+        idleModeOn = false;
+        Serial.println("!!! Shaking → Dizzy !!!");
     }
 }
 
