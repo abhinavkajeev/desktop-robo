@@ -1,137 +1,296 @@
 """
-Laptop client for the Robi workflow.
-- Polls /next_trigger on the server.
-- When a trigger is received, records a short audio chunk and transcribes using Whisper.
-- If wake word "hey robi" is detected, records the user's query, transcribes it, POSTs to /chat with session_id.
-- Receives AI reply, speaks via pyttsx3 (system default audio device -> your Bluetooth speaker if set as default), and POSTs /display so the ESP32 can fetch the text.
+Robi Laptop Client — Always-On Wake Word Listener
+==================================================
+Say "Hey Robi <your question>" in one sentence and it will:
+  1. Detect the wake phrase (fuzzy — catches "hero be", "hey roby", etc.)
+  2. Extract your question from the same clip
+  3. Send to the Flask AI server
+  4. Speak the reply via macOS `say` (Bluetooth speaker if set as default)
+  5. Push the reply to the ESP32 OLED display
 
-Usage (Windows cmd.exe):
-C:/Users/abhin/AppData/Local/Programs/Python/Python311/python.exe laptop_client.py --server http://192.168.29.202:5000
+Usage:
+    python laptop_client.py --server http://192.168.29.209:5001
 
-Notes:
-- Make sure your Bluetooth speaker is paired and set as the Windows default output device before running this script.
-- Whisper model download may occur on first run (it can be large). Use --model tiny for much faster startup (lower accuracy).
+Flags:
+    --model    tiny|base|small|medium|large  (default: base)
+    --mic      device index                  (default: 1 = MacBook Air mic)
+    --list-mics                              show all input devices and exit
 """
 
 import argparse
-import time
-import requests
-import sounddevice as sd
-import scipy.io.wavfile as wav
-import tempfile
-import whisper
-import pyttsx3
+import difflib
 import os
+import tempfile
+import time
+import uuid
+import subprocess
 
+import numpy as np
+import requests
+import scipy.io.wavfile as wav
+import sounddevice as sd
+import whisper
 
-def record_audio(duration=3, fs=16000, filename=None):
-    if filename is None:
-        fd, filename = tempfile.mkstemp(suffix='.wav')
-        os.close(fd)
-    print(f"Recording {duration}s -> {filename}")
-    audio = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16')
+# ─────────────────────────── constants ──────────────────────────────────────
+WAKE_PHRASE   = "hey robi"
+LISTEN_SEC    = 5.0          # window to catch "hey robi <question>"
+QUERY_SEC     = 6.0          # follow-up window if no question in wake clip
+RMS_THRESHOLD = 150          # skip silent clips (stops hallucinations)
+FUZZY_THRESH  = 0.55         # 0=anything matches, 1=exact only
+COOLDOWN_SEC  = 5            # ignore re-triggers after speaking
+
+# Whisper prompt — primes the model to expect these words
+WHISPER_PROMPT = "Hey Robi, tell me about"
+
+# ─────────────────────────── audio helpers ───────────────────────────────────
+
+def record_clip(duration: float, fs: int = 16000, device: int | None = None):
+    """Record audio. Returns (wav_path, rms_level)."""
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    audio = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype="int16", device=device)
     sd.wait()
-    wav.write(filename, fs, audio)
-    return filename
+    rms = int(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
+    wav.write(path, fs, audio)
+    return path, rms
 
 
-def transcribe_file(model, filename):
-    print('Transcribing...')
-    res = model.transcribe(filename)
-    text = res.get('text', '')
-    print('Transcribed:', text)
-    return text.strip()
+def transcribe(model, path: str) -> str:
+    """Transcribe wav file with Whisper, biased toward the wake phrase."""
+    result = model.transcribe(path, fp16=False, initial_prompt=WHISPER_PROMPT)
+    return result.get("text", "").strip()
 
 
-def speak_text(engine, text):
-    print('Speaking:', text)
-    engine.say(text)
-    engine.runAndWait()
+def is_wake_word(text: str, wake: str = WAKE_PHRASE, threshold: float = FUZZY_THRESH) -> bool:
+    """
+    Fuzzy sliding-window match.
+    Returns True if text contains something close enough to the wake phrase.
+    Catches: 'hero be', 'hey roby', 'HEROBUIT', 'hey Robi' etc.
+    """
+    lower = text.lower()
+    # Fast exact check first
+    if wake in lower:
+        return True
+
+    words   = lower.split()
+    w_words = wake.split()
+    n       = len(w_words)
+    for i in range(max(1, len(words) - n + 1)):
+        window = " ".join(words[i : i + n])
+        ratio  = difflib.SequenceMatcher(None, window, wake).ratio()
+        if ratio >= threshold:
+            print(f"  🔍 Fuzzy match: {window!r} ≈ {wake!r}  (score={ratio:.2f})")
+            return True
+    return False
 
 
-def main(server, model_name='small'):
-    server = server.rstrip('/')
-    print('Using server:', server)
+def extract_query(text: str, wake: str = WAKE_PHRASE) -> str:
+    """
+    Pull out everything said AFTER the wake phrase in the same clip.
+    Works even if Whisper mis-spelled the wake phrase.
+    """
+    lower = text.lower()
+    words   = lower.split()
+    w_words = wake.split()
+    n       = len(w_words)
 
-    print('Loading Whisper model (this may download weights)...')
-    model = whisper.load_model(model_name)
-    print('Model loaded:', model_name)
+    best_idx = -1
+    best_ratio = 0.0
+    for i in range(max(1, len(words) - n + 1)):
+        window = " ".join(words[i : i + n])
+        ratio  = difflib.SequenceMatcher(None, window, wake).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_idx   = i
 
-    engine = pyttsx3.init()
+    if best_idx >= 0:
+        # Return original-case text after the matched window
+        orig_words = text.split()
+        after = " ".join(orig_words[best_idx + n:]).strip(" ,.-!?")
+        return after
+    return ""
 
-    poll_interval = 1.0
-    while True:
-        try:
-            r = requests.get(f"{server}/next_trigger", timeout=5)
-        except requests.RequestException as e:
-            print('Error polling server:', e)
-            time.sleep(poll_interval)
-            continue
 
-        if r.status_code == 204:
-            time.sleep(poll_interval)
-            continue
+# ─────────────────────────── I/O helpers ─────────────────────────────────────
 
+def speak(text: str):
+    """Speak via macOS `say` → goes to default audio output (Bluetooth speaker)."""
+    print(f"  🔊 Speaking: {text!r}")
+    try:
+        subprocess.run(["say", "-r", "175", text], check=True)
+    except Exception as e:
+        print(f"  ⚠️  TTS error: {e}")
+
+
+def ask_ai(server: str, query: str, session_id: str) -> str | None:
+    """POST /chat and return the AI reply string."""
+    try:
+        r = requests.post(
+            f"{server}/chat",
+            json={"message": query, "session_id": session_id},
+            timeout=30,
+        )
         if r.status_code != 200:
-            print('Unexpected status from /next_trigger:', r.status_code, r.text)
-            time.sleep(poll_interval)
+            print(f"  ⚠️  /chat → {r.status_code}: {r.text}")
+            return None
+        reply = r.json().get("reply", "").strip()
+        print(f"  🤖 AI: {reply!r}")
+        return reply
+    except Exception as e:
+        print(f"  ⚠️  /chat error: {e}")
+        return None
+
+
+def push_display(server: str, session_id: str, text: str):
+    """POST /display so the ESP32 can show the reply on its OLED."""
+    try:
+        r = requests.post(
+            f"{server}/display",
+            json={"session_id": session_id, "text": text},
+            timeout=5,
+        )
+        if r.status_code in (200, 204):
+            print("  📺 Sent to ESP32 display.")
+        else:
+            print(f"  ⚠️  /display → {r.status_code}")
+    except Exception as e:
+        print(f"  ⚠️  /display error: {e}")
+
+
+def push_state(server: str, state: str):
+    """Tell ESP32 what animation to play: listening, thinking, idle."""
+    try:
+        requests.post(f"{server}/state", json={"state": state}, timeout=3)
+        print(f"  🎭 State → {state}")
+    except Exception:
+        pass
+
+
+# ─────────────────────────── main loop ───────────────────────────────────────
+
+def main(server: str, model_name: str, mic_device: int | None):
+    server = server.rstrip("/")
+    dev_name = sd.query_devices(mic_device)["name"] if mic_device is not None else "system default"
+
+    print(f"\n{'='*52}")
+    print(f"  🤖  Robi — Wake Word Listener")
+    print(f"  Server : {server}")
+    print(f"  Mic    : [{mic_device}] {dev_name}")
+    print(f"  Model  : {model_name}")
+    print(f"  Wake   : \"{WAKE_PHRASE}\"  (fuzzy, threshold={FUZZY_THRESH})")
+    print(f"  RMS    : skip clips below {RMS_THRESHOLD}")
+    print(f"{'='*52}\n")
+
+    print("⏳ Loading Whisper … (downloads on first run)")
+    model = whisper.load_model(model_name)
+    print("✅ Whisper ready.\n")
+
+    print(f'👂 Say  "Hey Robi <your question>"  to activate.\n')
+
+    cooldown_until = 0.0
+
+    while True:
+        # ── 1. Record a clip ──────────────────────────────────────────────────
+        path, rms = record_clip(LISTEN_SEC, device=mic_device)
+
+        # ── 2. Skip silent / noise-only clips ─────────────────────────────────
+        if rms < RMS_THRESHOLD:
+            print(f"  🤫 Silent (RMS={rms}), skipping.\n")
+            try:
+                os.remove(path)
+            except OSError:
+                pass
             continue
 
-        item = r.json()
-        session_id = item.get('session_id')
-        print('Got trigger, session_id=', session_id)
+        # ── 3. Transcribe ─────────────────────────────────────────────────────
+        text = transcribe(model, path)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
-        # Record short clip for wake word
-        wake_file = record_audio(duration=3)
-        wake_text = transcribe_file(model, wake_file).lower()
+        print(f"  📝 Heard: {text!r}  (RMS={rms})")
 
-        if 'hey robi' not in wake_text:
-            print('Wake word not detected (heard: "%s"). Ignoring.' % wake_text)
+        if not text:
             continue
 
-        print('Wake word detected! Recording user query...')
-        q_file = record_audio(duration=5)
-        query = transcribe_file(model, q_file)
+        # ── 4. Check for wake word ────────────────────────────────────────────
+        if not is_wake_word(text):
+            print(f"  💤 No wake word, ignoring.\n")
+            continue
+
+        if time.time() < cooldown_until:
+            print("  ⏸  Cooldown active.\n")
+            continue
+
+        print(f"\n🟢 Wake word detected!")
+        push_state(server, "listening")   # 🎭 eyes light up
+
+        # ── 5. Extract query from same clip ───────────────────────────────────
+        query = extract_query(text)
+
+        if query and len(query.split()) >= 2:
+            print(f"  ❓ Question (same clip): {query!r}")
+        else:
+            # Record a follow-up question clip
+            print(f"  ❓ Listening for your question ({QUERY_SEC}s) …")
+            q_path, q_rms = record_clip(QUERY_SEC, device=mic_device)
+            if q_rms < RMS_THRESHOLD:
+                print("  ⚠️  No speech heard. Try: 'Hey Robi what time is it?'\n")
+                push_state(server, "idle")
+                try:
+                    os.remove(q_path)
+                except OSError:
+                    pass
+                continue
+            query = transcribe(model, q_path)
+            try:
+                os.remove(q_path)
+            except OSError:
+                pass
 
         if not query:
-            print('No query detected. Skipping.')
+            print("  ⚠️  No question detected. Try again.\n")
+            push_state(server, "idle")
             continue
 
-        # Send to server /chat
-        try:
-            payload = {'message': query, 'session_id': session_id}
-            rc = requests.post(f"{server}/chat", json=payload, timeout=20)
-            if rc.status_code != 200:
-                print('/chat returned', rc.status_code, rc.text)
-                continue
-            data = rc.json()
-            reply = data.get('reply')
-            if not reply:
-                print('No reply in /chat response:', data)
-                continue
+        # ── 6. Ask AI ─────────────────────────────────────────────────────────
+        push_state(server, "thinking")  # 🎭 eyes look up, dots animation
+        session_id = str(uuid.uuid4())
+        print(f"  📡 Sending: {query!r}")
+        reply = ask_ai(server, query, session_id)
 
-            # Play reply via system default audio (set your Bluetooth speaker as default)
-            speak_text(engine, reply)
+        if not reply:
+            speak("Sorry, I couldn't get a response.")
+            push_state(server, "idle")
+            cooldown_until = time.time() + 3
+            continue
 
-            # Post display for ESP32
-            try:
-                dd = {'session_id': session_id, 'text': reply}
-                dresp = requests.post(f"{server}/display", json=dd, timeout=5)
-                if dresp.status_code not in (200, 204):
-                    print('/display returned', dresp.status_code, dresp.text)
-            except Exception as e:
-                print('Error posting /display:', e)
+        # ── 7. Speak + display ────────────────────────────────────────────────
+        # /chat already stored the reply in latest_reply for ESP32 to pick up.
+        speak(reply)
 
-        except Exception as e:
-            print('Error talking to server /chat:', e)
-
-        # small cooldown
-        time.sleep(1)
+        cooldown_until = time.time() + COOLDOWN_SEC
+        push_state(server, "idle")      # 🎭 back to chill eyes
+        print(f"\n👂 Listening again …\n")
 
 
-if __name__ == '__main__':
-    p = argparse.ArgumentParser()
-    p.add_argument('--server', required=True, help='Server base URL, e.g. http://192.168.29.202:5000')
-    p.add_argument('--model', default='small', help='Whisper model name (tiny, base, small, medium, large)')
+# ─────────────────────────── entry point ─────────────────────────────────────
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(description="Robi wake-word listener")
+    p.add_argument("--server", required=True, help="Flask server URL e.g. http://192.168.29.209:5001")
+    p.add_argument("--model",  default="base", choices=["tiny","base","small","medium","large"])
+    p.add_argument("--mic",    type=int, default=1, help="Mic device index (default 1 = MacBook Air mic)")
+    p.add_argument("--list-mics", action="store_true", help="List audio input devices and exit")
     args = p.parse_args()
-    main(args.server, model_name=args.model)
+
+    if args.list_mics:
+        print("\nAudio input devices:")
+        for i, d in enumerate(sd.query_devices()):
+            if d["max_input_channels"] > 0:
+                tag = ">>>" if i == sd.default.device[0] else "   "
+                print(f"  {tag} [{i}] {d['name']}")
+        raise SystemExit(0)
+
+    main(server=args.server, model_name=args.model, mic_device=args.mic)

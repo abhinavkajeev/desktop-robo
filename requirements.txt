@@ -1,0 +1,7 @@
+flask
+openai-whisper
+sounddevice
+scipy
+requests
+pyttsx3
+python-dotenv
