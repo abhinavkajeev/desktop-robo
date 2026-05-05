@@ -157,6 +157,7 @@ unsigned long transitionStart = 0;
 #define MPU_ADDR 0x68
 bool mpuOK = false;
 float gyroLeanX = 0, gyroLeanY = 0;
+float gyroOffsetX = 0, gyroOffsetY = 0;  // smoothed pixel offset for whole-eye shift
 unsigned long lastMotionCheck = 0;
 
 // State timing
@@ -227,25 +228,13 @@ void drawEye(int cx, int cy, int w, int h, float pupilX, float pupilY,
 
     int radius = min(EYE_RADIUS, drawH / 2);
 
-    // Draw eye outline (filled rounded rect)
+    // Emo style: whole eye shifts position based on look direction
+    int shiftX = (int)(pupilX * 10.0f);  // max ±10px horizontal shift
+    int shiftY = (int)(pupilY * 5.0f);   // max ±5px vertical shift
+
+    // Draw eye (filled rounded rect) — shifted by look direction
     u8g2.setDrawColor(1);
-    u8g2.drawRBox(cx - hw, drawTop, w, drawH, radius);
-
-    // Pupil position — map normalized (-1 to 1) to pixel offsets
-    if (drawH > PUPIL_H + 4) {
-        int maxPupilX = hw - PUPIL_W / 2 - 3;
-        int maxPupilY = drawH / 2 - PUPIL_H / 2 - 2;
-        int px = cx + (int)(pupilX * maxPupilX);
-        int py = drawTop + drawH / 2 + (int)(pupilY * maxPupilY);
-
-        u8g2.setDrawColor(0);
-        u8g2.drawRBox(px - PUPIL_W / 2, py - PUPIL_H / 2, PUPIL_W, PUPIL_H, 3);
-
-        // Specular highlight
-        u8g2.setDrawColor(1);
-        u8g2.drawDisc(px - 3, py - 3, 2);
-    }
-    u8g2.setDrawColor(1);
+    u8g2.drawRBox(cx - hw + shiftX, drawTop + shiftY, w, drawH, radius);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -291,9 +280,9 @@ void updateIdleMode() {
 
     unsigned long now = millis();
     if (now >= nextIdleMove) {
-        // Random position — normalized -0.8 to 0.8
-        eyeTargetX = (random(-80, 81)) / 100.0f;
-        eyeTargetY = (random(-40, 41)) / 100.0f;
+        // Emo style: bigger wandering range for whole-eye movement
+        eyeTargetX = (random(-100, 101)) / 100.0f;
+        eyeTargetY = (random(-60, 61)) / 100.0f;
         nextIdleMove = now + 1500 + random(0, 2500);
     }
 }
@@ -1026,12 +1015,19 @@ void updateMotion() {
 void drawEyes() {
     updateMotion();
 
-    // Smooth easing for all parameters
-    // Mix idle/state targets with gyro leaning
-    float targetX = eyeTargetX + gyroLeanX;
-    float targetY = eyeTargetY + gyroLeanY;
+    // Smooth whole-eye position offset (vector shift)
+    float targetOffX = gyroLeanX * 18.0f;  // max ±18px horizontal shift
+    float targetOffY = gyroLeanY * 10.0f;  // max ±10px vertical shift
+    gyroOffsetX = lerp(gyroOffsetX, targetOffX, 0.12f);
+    gyroOffsetY = lerp(gyroOffsetY, targetOffY, 0.12f);
+    int gox = (int)gyroOffsetX;
+    int goy = (int)gyroOffsetY;
+
+    // Smooth easing for pupil direction (smaller contribution now)
+    float targetX = eyeTargetX + gyroLeanX * 0.3f;
+    float targetY = eyeTargetY + gyroLeanY * 0.3f;
     
-    // Clamp total targets to screen limits
+    // Clamp
     if (targetX > 1.0f) targetX = 1.0f; if (targetX < -1.0f) targetX = -1.0f;
     if (targetY > 1.0f) targetY = 1.0f; if (targetY < -1.0f) targetY = -1.0f;
 
@@ -1056,7 +1052,7 @@ void drawEyes() {
     } else if (currentState == STATE_EXCITED) {
         drawCuteExcitedFace(offsetY);
     } else {
-        // Normal eye rendering
+        // Normal eye rendering with gyro offset
         MoodParams mp = getMoodParams(currentMood);
 
         int curiosityL = 0, curiosityR = 0;
@@ -1065,13 +1061,13 @@ void drawEyes() {
             if (eyeCurrentX >  0.3f) curiosityR = (int)(abs(eyeCurrentX) * 6);
         }
 
-        drawEye(EYE_L_CX, EYE_CY + offsetY,
+        drawEye(EYE_L_CX + gox, EYE_CY + offsetY + goy,
                 EYE_W, EYE_H + curiosityL,
                 eyeCurrentX, eyeCurrentY,
                 mp.topTrimL, mp.bottomTrimL,
                 eyeLidTop, eyeLidBot);
 
-        drawEye(EYE_R_CX, EYE_CY + offsetY,
+        drawEye(EYE_R_CX + gox, EYE_CY + offsetY + goy,
                 EYE_W, EYE_H + curiosityR,
                 eyeCurrentX, eyeCurrentY,
                 mp.topTrimR, mp.bottomTrimR,
