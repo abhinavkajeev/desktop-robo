@@ -22,8 +22,6 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 #include <ArduinoJson.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
 
 // ═══════════════════════════════════════════════════════════════════════
 //  CONFIG
@@ -35,6 +33,8 @@ static const char* SERVER        = "http://192.168.29.209:5001";
 #define I2C_SDA   6
 #define I2C_SCL   7
 #define TOUCH_PIN 13
+
+// MPU6050 shares I2C bus with OLED (GPIO 6/7)
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
 
@@ -153,8 +153,8 @@ unsigned long nextEmotionTime = 0;
 unsigned long transitionStart = 0;
 #define TRANSITION_MS 300
 
-// Motion Tracking (MPU6050)
-Adafruit_MPU6050 mpu;
+// Motion Tracking (MPU6050 via raw I2C)
+#define MPU_ADDR 0x68
 bool mpuOK = false;
 float gyroLeanX = 0, gyroLeanY = 0;
 unsigned long lastMotionCheck = 0;
@@ -976,30 +976,45 @@ void startRandomEmotion() {
 // ═══════════════════════════════════════════════════════════════════════
 void updateMotion() {
     if (!mpuOK) return;
-    if (millis() - lastMotionCheck < 20) return; // 50Hz update
+    if (millis() - lastMotionCheck < 20) return; // 50Hz
     lastMotionCheck = millis();
 
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
+    // Read 6 bytes starting at register 0x3B (ACCEL_XOUT_H)
+    Wire.beginTransmission(MPU_ADDR);
+    Wire.write(0x3B);
+    Wire.endTransmission(false);
+    Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)6, (uint8_t)true);
 
-    // X tilt (leaning left/right)
-    gyroLeanX = (a.acceleration.y / 8.0f); 
+    int16_t rawX = (Wire.read() << 8) | Wire.read();
+    int16_t rawY = (Wire.read() << 8) | Wire.read();
+    int16_t rawZ = (Wire.read() << 8) | Wire.read();
+
+    // Convert to m/s^2 (range ±8g, sensitivity 4096 LSB/g)
+    float ax = rawX / 4096.0f * 9.81f;
+    float ay = rawY / 4096.0f * 9.81f;
+    float az = rawZ / 4096.0f * 9.81f;
+
+    gyroLeanX = ay / 8.0f;
     if (gyroLeanX > 1.0f) gyroLeanX = 1.0f;
     if (gyroLeanX < -1.0f) gyroLeanX = -1.0f;
 
-    // Y tilt (leaning forward/back)
-    gyroLeanY = (a.acceleration.x / 8.0f);
+    gyroLeanY = ax / 8.0f;
     if (gyroLeanY > 1.0f) gyroLeanY = 1.0f;
     if (gyroLeanY < -1.0f) gyroLeanY = -1.0f;
 
-    // Detect sudden movement (Magnitude)
-    float totalAccel = sqrt(a.acceleration.x*a.acceleration.x + 
-                            a.acceleration.y*a.acceleration.y + 
-                            a.acceleration.z*a.acceleration.z);
+    float totalAccel = sqrt(ax*ax + ay*ay + az*az);
+
+    // Debug every 500ms
+    static unsigned long lastDebug = 0;
+    if (millis() - lastDebug > 500) {
+        lastDebug = millis();
+        Serial.printf("MPU: X=%.2f Y=%.2f Z=%.2f | total=%.2f | lean X=%.2f Y=%.2f\n",
+                      ax, ay, az, totalAccel, gyroLeanX, gyroLeanY);
+    }
+
     if (totalAccel > 18.0f && currentState == STATE_IDLE && currentEmotion == EMO_NONE) {
-        // Robi got moved suddenly!
-        startRandomEmotion(); 
-        currentEmotion = EMO_STARTLED; // Force startled
+        startRandomEmotion();
+        currentEmotion = EMO_STARTLED;
         emotionDuration = 2000;
         Serial.println("!!! Startled by motion !!!");
     }
@@ -1352,16 +1367,37 @@ void setup() {
     nextSleepTime = millis() + 180000UL + random(0, 120000);  // 3-5 min
     nextEmotionTime = millis() + 4000UL + random(0, 4000);  // 4-8s hyperactive     // 8-15s
 
-    // MPU6050
-    if (!mpu.begin()) {
-        Serial.println("Failed to find MPU6050 chip");
-        mpuOK = false;
-    } else {
-        Serial.println("MPU6050 Found!");
+    // MPU6050 on same I2C bus as OLED (GPIO 6/7)
+    // Wire already initialized by u8g2
+    
+    // I2C Scanner
+    Serial.println("Scanning I2C bus (GPIO 6/7)...");
+    int found = 0;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("  Found device at 0x%02X\n", addr);
+            found++;
+        }
+    }
+    if (found == 0) Serial.println("  No devices found!");
+
+    // Wake up MPU6050: write 0 to PWR_MGMT_1 (register 0x6B)
+    Wire.beginTransmission(MPU_ADDR);
+    Wire.write(0x6B);
+    Wire.write(0x00);
+    uint8_t err = Wire.endTransmission();
+    if (err == 0) {
+        Serial.println("MPU6050 AWAKE!");
         mpuOK = true;
-        mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-        mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-        mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+        // Set range to ±8g (register 0x1C, value 0x10)
+        Wire.beginTransmission(MPU_ADDR);
+        Wire.write(0x1C);
+        Wire.write(0x10);
+        Wire.endTransmission();
+    } else {
+        Serial.printf("MPU6050 FAILED (err=%d)\n", err);
+        mpuOK = false;
     }
 
     Serial.println("Ready!");
