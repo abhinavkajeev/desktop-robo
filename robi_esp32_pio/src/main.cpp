@@ -22,6 +22,8 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 #include <ArduinoJson.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
 
 // ═══════════════════════════════════════════════════════════════════════
 //  CONFIG
@@ -150,6 +152,12 @@ unsigned long nextEmotionTime = 0;
 // Smooth transition timer
 unsigned long transitionStart = 0;
 #define TRANSITION_MS 300
+
+// Motion Tracking (MPU6050)
+Adafruit_MPU6050 mpu;
+bool mpuOK = false;
+float gyroLeanX = 0, gyroLeanY = 0;
+unsigned long lastMotionCheck = 0;
 
 // State timing
 unsigned long stateStart = 0;
@@ -964,12 +972,56 @@ void startRandomEmotion() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  MOTION TRACKING
+// ═══════════════════════════════════════════════════════════════════════
+void updateMotion() {
+    if (!mpuOK) return;
+    if (millis() - lastMotionCheck < 20) return; // 50Hz update
+    lastMotionCheck = millis();
+
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
+
+    // X tilt (leaning left/right)
+    gyroLeanX = (a.acceleration.y / 8.0f); 
+    if (gyroLeanX > 1.0f) gyroLeanX = 1.0f;
+    if (gyroLeanX < -1.0f) gyroLeanX = -1.0f;
+
+    // Y tilt (leaning forward/back)
+    gyroLeanY = (a.acceleration.x / 8.0f);
+    if (gyroLeanY > 1.0f) gyroLeanY = 1.0f;
+    if (gyroLeanY < -1.0f) gyroLeanY = -1.0f;
+
+    // Detect sudden movement (Magnitude)
+    float totalAccel = sqrt(a.acceleration.x*a.acceleration.x + 
+                            a.acceleration.y*a.acceleration.y + 
+                            a.acceleration.z*a.acceleration.z);
+    if (totalAccel > 18.0f && currentState == STATE_IDLE && currentEmotion == EMO_NONE) {
+        // Robi got moved suddenly!
+        startRandomEmotion(); 
+        currentEmotion = EMO_STARTLED; // Force startled
+        emotionDuration = 2000;
+        Serial.println("!!! Startled by motion !!!");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  DRAW BOTH EYES
 // ═══════════════════════════════════════════════════════════════════════
 void drawEyes() {
+    updateMotion();
+
     // Smooth easing for all parameters
-    eyeCurrentX = lerp(eyeCurrentX, eyeTargetX, 0.08f);
-    eyeCurrentY = lerp(eyeCurrentY, eyeTargetY, 0.08f);
+    // Mix idle/state targets with gyro leaning
+    float targetX = eyeTargetX + gyroLeanX;
+    float targetY = eyeTargetY + gyroLeanY;
+    
+    // Clamp total targets to screen limits
+    if (targetX > 1.0f) targetX = 1.0f; if (targetX < -1.0f) targetX = -1.0f;
+    if (targetY > 1.0f) targetY = 1.0f; if (targetY < -1.0f) targetY = -1.0f;
+
+    eyeCurrentX = lerp(eyeCurrentX, targetX, 0.08f);
+    eyeCurrentY = lerp(eyeCurrentY, targetY, 0.08f);
     eyeLidTop = lerp(eyeLidTop, eyeLidTargetTop, 0.25f);
     eyeLidBot = lerp(eyeLidBot, eyeLidTargetBot, 0.25f);
 
@@ -1299,6 +1351,18 @@ void setup() {
     nextIdleMove = millis() + 1500 + random(0, 2000);
     nextSleepTime = millis() + 180000UL + random(0, 120000);  // 3-5 min
     nextEmotionTime = millis() + 4000UL + random(0, 4000);  // 4-8s hyperactive     // 8-15s
+
+    // MPU6050
+    if (!mpu.begin()) {
+        Serial.println("Failed to find MPU6050 chip");
+        mpuOK = false;
+    } else {
+        Serial.println("MPU6050 Found!");
+        mpuOK = true;
+        mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+        mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+        mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+    }
 
     Serial.println("Ready!");
 }
