@@ -135,7 +135,13 @@ enum EmoEmotion {
     EMO_SIGH,         // dramatic close + slow reopen
     EMO_CURIOUS,      // one eye bigger, peek
     EMO_DIZZY,        // eyes shake
-    EMO_COUNT = 6     // total emotions (excluding NONE)
+    EMO_SNEEZE,       // squeeze shut + head bob
+    EMO_WINK,         // one eye closes smoothly
+    EMO_STARTLED,     // eyes go wide, then relax
+    EMO_SHY,          // eyes shrink, look down
+    EMO_MISCHIEVOUS,  // narrow sly look
+    EMO_DAYDREAM,     // eyes float up dreamily
+    EMO_COUNT = 12    // total emotions (excluding NONE)
 };
 EmoEmotion currentEmotion = EMO_NONE;
 unsigned long emotionStart = 0;
@@ -628,17 +634,122 @@ void drawEmoEmotion() {
     default:
         break;
     }
+
+    // ── NEW EMOTIONS ──────────────────────────────────────────────────
+    // (using if-else since they're after the switch)
+    if (currentEmotion == EMO_SNEEZE) {
+        // Squeeze eyes shut → head bobs forward → recover
+        if (p < 0.3f) {
+            // Building up — eyes slowly squeezing
+            float sq = p / 0.3f;
+            drawEye(lcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, sq * 0.8f, sq * 0.8f);
+            drawEye(rcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, sq * 0.8f, sq * 0.8f);
+        } else if (p < 0.5f) {
+            // ACHOO! — eyes fully shut, head bobs down
+            float bob = sin((p - 0.3f) / 0.2f * PI) * 8;
+            drawSleepArc(lcx, cy + (int)bob, EYE_W/2, 3);
+            drawSleepArc(rcx, cy + (int)bob, EYE_W/2, 3);
+            // Sneeze particles
+            for (int i = 0; i < 4; i++) {
+                float a = (p - 0.3f) * 20.0f + i * 1.5f;
+                int px = SCREEN_W/2 + (int)((p - 0.3f) * 200 * cos(a));
+                int py = cy + 20 + (int)((p - 0.3f) * 100 * sin(a));
+                if (px > 0 && px < 128 && py > 0 && py < 64)
+                    u8g2.drawPixel(px, py);
+            }
+        } else {
+            // Recovery — eyes reopen with a blink
+            float op = (p - 0.5f) / 0.5f;
+            float sq = (op < 0.3f) ? (1.0f - op / 0.3f) * 0.6f : 0;
+            drawEye(lcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, sq, sq);
+            drawEye(rcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, sq, sq);
+        }
+
+    } else if (currentEmotion == EMO_WINK) {
+        // Smooth wink with right eye
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.7f) ? (p - 0.7f) / 0.3f : 0.0f;
+        float e = entry * (1.0f - hold);
+
+        // Left eye stays open, right closes
+        drawEye(lcx, cy, EYE_W, EYE_H, 0.2f * e, 0, 0, 0, 0, 0);
+        drawEye(rcx, cy, EYE_W, EYE_H, 0.2f * e, 0, 0, 0, e, e);
+
+    } else if (currentEmotion == EMO_STARTLED) {
+        // Eyes snap wide, then slowly relax
+        float entry = min(1.0f, p * 6.0f);  // very fast ramp
+        float hold = (p > 0.5f) ? (p - 0.5f) / 0.5f : 0.0f;
+        float e = entry * (1.0f - hold);
+
+        int extraSize = (int)(e * 8);  // eyes grow bigger
+        drawEye(lcx, cy - (int)(e * 3), EYE_W + extraSize, EYE_H + extraSize,
+                0, -e * 0.3f, 0, 0, 0, 0);
+        drawEye(rcx, cy - (int)(e * 3), EYE_W + extraSize, EYE_H + extraSize,
+                0, -e * 0.3f, 0, 0, 0, 0);
+
+    } else if (currentEmotion == EMO_SHY) {
+        // Eyes shrink, look down, slight inward tilt
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.75f) ? (p - 0.75f) * 4.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+
+        int shrink = (int)(e * 6);
+        drawEye(lcx + (int)(e * 3), cy + (int)(e * 4),
+                EYE_W - shrink, EYE_H - shrink,
+                0.2f * e, e * 0.6f, 0, 0, 0, 0);
+        drawEye(rcx - (int)(e * 3), cy + (int)(e * 4),
+                EYE_W - shrink, EYE_H - shrink,
+                -0.2f * e, e * 0.6f, 0, 0, 0, 0);
+
+    } else if (currentEmotion == EMO_MISCHIEVOUS) {
+        // Narrow sly eyes, looking to one side
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+
+        int squish = (int)(e * 10);  // compress vertically
+        float slyLook = e * 0.8f;
+        drawEye(lcx, cy, EYE_W, EYE_H - squish, slyLook, 0,
+                (int)(e * 5), (int)(e * 3), 0, 0);
+        drawEye(rcx, cy, EYE_W, EYE_H - squish, slyLook, 0,
+                (int)(e * 5), (int)(e * 3), 0, 0);
+
+    } else if (currentEmotion == EMO_DAYDREAM) {
+        // Eyes float upward dreamily, slow gentle motion
+        float entry = min(1.0f, p * 2.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+
+        float floatY = -e * 0.6f;  // look up
+        float gentle = sin(p * PI * 2) * 0.15f;  // gentle sway
+
+        // Slightly droopy/dreamy lids
+        drawEye(lcx, cy - (int)(e * 2), EYE_W, EYE_H, gentle, floatY,
+                (int)(e * 4), 0, e * 0.2f, 0);
+        drawEye(rcx, cy - (int)(e * 2), EYE_W, EYE_H, gentle, floatY,
+                (int)(e * 4), 0, e * 0.2f, 0);
+
+        // Floating sparkle
+        if (e > 0.3f) {
+            float sa = t / 200.0f;
+            int sx = SCREEN_W/2 + (int)(20.0f * cos(sa));
+            int sy = 8 + (int)(4.0f * sin(sa * 1.5f));
+            u8g2.drawLine(sx - 2, sy, sx + 2, sy);
+            u8g2.drawLine(sx, sy - 2, sx, sy + 2);
+        }
+    }
 }
 
 void startRandomEmotion() {
-    // Pick a random emotion (1-6)
+    // Pick a random emotion (1-12)
     currentEmotion = (EmoEmotion)(1 + random(0, EMO_COUNT));
     emotionStart = millis();
-    // Duration: 3-6 seconds
     emotionDuration = 3000 + random(0, 3000);
 
-    const char* names[] = {"?", "Suspicious", "Sad", "Bored", "Sigh", "Curious", "Dizzy"};
-    Serial.printf("✨ Emo: %s (%lums)\n", names[currentEmotion], emotionDuration);
+    const char* names[] = {"?", "Suspicious", "Sad", "Bored", "Sigh", "Curious",
+                           "Dizzy", "Sneeze", "Wink", "Startled", "Shy",
+                           "Mischievous", "Daydream"};
+    Serial.printf("Emo: %s (%lums)\n", names[currentEmotion], emotionDuration);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
