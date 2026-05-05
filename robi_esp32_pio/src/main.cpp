@@ -159,6 +159,7 @@ bool mpuOK = false;
 float gyroLeanX = 0, gyroLeanY = 0;
 float gyroOffsetX = 0, gyroOffsetY = 0;  // smoothed pixel offset for whole-eye shift
 unsigned long lastMotionCheck = 0;
+float calOffsetX = 0, calOffsetY = 0;    // calibration offsets (resting position)
 
 // State timing
 unsigned long stateStart = 0;
@@ -968,8 +969,8 @@ void updateMotion() {
     int16_t rawZ = (Wire.read() << 8) | Wire.read();
 
     // Convert to m/s^2 (range ±8g, sensitivity 4096 LSB/g)
-    float ax = rawX / 4096.0f * 9.81f;
-    float ay = rawY / 4096.0f * 9.81f;
+    float ax = rawX / 4096.0f * 9.81f - calOffsetX;
+    float ay = rawY / 4096.0f * 9.81f - calOffsetY;
     float az = rawZ / 4096.0f * 9.81f;
 
     gyroLeanX = ay / 8.0f;
@@ -988,7 +989,7 @@ void updateMotion() {
         currentEmotion = EMO_NONE;
         autoBlinkOn = true;
         idleModeOn = true;
-        nextEmotionTime = millis() + 6000UL + random(0, 4000);  // delay next emotion
+        nextEmotionTime = millis() + 6000UL + random(0, 4000);
     }
 
     // Suppress new emotions while tilting
@@ -1000,8 +1001,8 @@ void updateMotion() {
     static unsigned long lastDebug = 0;
     if (millis() - lastDebug > 500) {
         lastDebug = millis();
-        Serial.printf("MPU: X=%.2f Y=%.2f Z=%.2f | total=%.2f | lean X=%.2f Y=%.2f\n",
-                      ax, ay, az, totalAccel, gyroLeanX, gyroLeanY);
+        Serial.printf("MPU: X=%.1f Y=%.1f Z=%.1f | tot=%.1f | tilt=%.2f\n",
+                      ax, ay, az, totalAccel, tiltMag);
     }
 
     // Shaking → dizzy emotion
@@ -1011,7 +1012,7 @@ void updateMotion() {
         emotionDuration = 2500;
         autoBlinkOn = false;
         idleModeOn = false;
-        Serial.println("!!! Shaking → Dizzy !!!");
+        Serial.println("!! Shake -> Dizzy !!");
     }
 }
 
@@ -1397,6 +1398,25 @@ void setup() {
         Wire.write(0x1C);
         Wire.write(0x10);
         Wire.endTransmission();
+
+        // Auto-calibrate: read 20 samples and average
+        delay(100);  // let sensor settle
+        float sumX = 0, sumY = 0;
+        for (int i = 0; i < 20; i++) {
+            Wire.beginTransmission(MPU_ADDR);
+            Wire.write(0x3B);
+            Wire.endTransmission(false);
+            Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)6, (uint8_t)true);
+            int16_t rx = (Wire.read() << 8) | Wire.read();
+            int16_t ry = (Wire.read() << 8) | Wire.read();
+            Wire.read(); Wire.read(); // skip Z
+            sumX += rx / 4096.0f * 9.81f;
+            sumY += ry / 4096.0f * 9.81f;
+            delay(10);
+        }
+        calOffsetX = sumX / 20.0f;
+        calOffsetY = sumY / 20.0f;
+        Serial.printf("MPU calibrated: offX=%.2f offY=%.2f\n", calOffsetX, calOffsetY);
     } else {
         Serial.printf("MPU6050 FAILED (err=%d)\n", err);
         mpuOK = false;
