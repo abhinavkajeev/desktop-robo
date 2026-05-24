@@ -30,19 +30,16 @@ static const char* WIFI_SSID     = "Spiderman_4g";
 static const char* WIFI_PASSWORD = "akashtheboss";
 static const char* SERVER        = "http://192.168.29.209:5001";
 
-// OLED display (Software I2C)
-#define OLED_SDA  5
-#define OLED_SCL  6
-
-// MPU6050 accelerometer (Hardware I2C / Wire)
-#define MPU_SDA   21
-#define MPU_SCL   20
+// I2C bus (shared by OLED + MPU6050)
+#define I2C_SDA  5
+#define I2C_SCL  6
 
 #define TOUCH_PIN 10
 #define BUZZER_PIN 7
 
-// U8g2 Software I2C — works reliably on any ESP32-C3 GPIO
-U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, OLED_SCL, OLED_SDA, U8X8_PIN_NONE);
+// OLED + MPU6050 share Hardware I2C on GPIO 5(SDA)/6(SCL)
+#define MPU_ADDR 0x68
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  BUZZER SOUNDS (using LEDC PWM)
@@ -236,8 +233,7 @@ unsigned long nextEmotionTime = 0;
 unsigned long transitionStart = 0;
 #define TRANSITION_MS 300
 
-// Motion Tracking (MPU6050 via raw I2C)
-#define MPU_ADDR 0x68
+// Motion Tracking (MPU6050 shares I2C with OLED)
 bool mpuOK = false;
 float gyroLeanX = 0, gyroLeanY = 0;
 float gyroOffsetX = 0, gyroOffsetY = 0;
@@ -310,10 +306,11 @@ void connectWiFi() {
     unsigned long t = millis();
     while (WiFi.status() != WL_CONNECTED) {
         delay(500); Serial.print('.');
-        if (millis() - t > 20000UL) {
-            WiFi.disconnect();
-            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-            t = millis();
+        // Timeout after 10 seconds — don't block forever
+        if (millis() - t > 10000UL) {
+            Serial.println(" TIMEOUT — running offline");
+            wifiOK = false;
+            return;
         }
     }
     Serial.print(" OK: "); Serial.println(WiFi.localIP());
@@ -1634,12 +1631,13 @@ void setup() {
     ledcAttachPin(BUZZER_PIN, BUZZER_CH);
     ledcWrite(BUZZER_CH, 0);  // silent
 
-    // Hardware I2C for MPU6050 (GPIO 21/20)
-    Wire.begin(MPU_SDA, MPU_SCL);
-    delay(50);
-
+    // U8g2 initializes Wire with correct pins (SCL=6, SDA=5)
     u8g2.begin();
     u8g2.setContrast(200);
+
+    // Re-init Wire to make sure MPU6050 can also use it
+    Wire.begin(I2C_SDA, I2C_SCL);
+    delay(50);
     pinMode(TOUCH_PIN, INPUT);
     attachInterrupt(digitalPinToInterrupt(TOUCH_PIN), touchISR, RISING);
     Serial.printf("Touch on GPIO %d\n", TOUCH_PIN);
@@ -1680,22 +1678,19 @@ void setup() {
     nextSleepTime = millis() + 180000UL + random(0, 120000);  // 3-5 min
     nextEmotionTime = millis() + 4000UL + random(0, 4000);  // 4-8s hyperactive     // 8-15s
 
-    // MPU6050 on Hardware I2C (GPIO 21/20)
-    // OLED uses Software I2C (GPIO 5/6) via u8g2
-    
-    // I2C Scanner on Wire (MPU bus)
-    Serial.println("Scanning MPU I2C bus (GPIO 21/20)...");
+    // MPU6050 shares I2C bus with OLED (GPIO 5/6)
+    Serial.println("Scanning I2C bus...");
     int found = 0;
     for (uint8_t addr = 1; addr < 127; addr++) {
         Wire.beginTransmission(addr);
         if (Wire.endTransmission() == 0) {
-            Serial.printf("  Found device at 0x%02X\n", addr);
+            Serial.printf("  Found 0x%02X\n", addr);
             found++;
         }
     }
-    if (found == 0) Serial.println("  No devices found!");
-
-    // Wake up MPU6050: write 0 to PWR_MGMT_1 (register 0x6B)
+    if (found == 0) Serial.println("  No I2C devices!");
+    
+    // Wake up MPU6050
     Wire.beginTransmission(MPU_ADDR);
     Wire.write(0x6B);
     Wire.write(0x00);
@@ -1703,14 +1698,14 @@ void setup() {
     if (err == 0) {
         Serial.println("MPU6050 AWAKE!");
         mpuOK = true;
-        // Set range to ±8g (register 0x1C, value 0x10)
+        // Set ±8g range
         Wire.beginTransmission(MPU_ADDR);
         Wire.write(0x1C);
         Wire.write(0x10);
         Wire.endTransmission();
 
-        // Auto-calibrate: read 20 samples and average
-        delay(100);  // let sensor settle
+        // Auto-calibrate
+        delay(100);
         float sumX = 0, sumY = 0;
         for (int i = 0; i < 20; i++) {
             Wire.beginTransmission(MPU_ADDR);
@@ -1719,7 +1714,7 @@ void setup() {
             Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)6, (uint8_t)true);
             int16_t rx = (Wire.read() << 8) | Wire.read();
             int16_t ry = (Wire.read() << 8) | Wire.read();
-            Wire.read(); Wire.read(); // skip Z
+            Wire.read(); Wire.read();
             sumX += rx / 4096.0f * 9.81f;
             sumY += ry / 4096.0f * 9.81f;
             delay(10);
@@ -1728,7 +1723,7 @@ void setup() {
         calOffsetY = sumY / 20.0f;
         Serial.printf("MPU calibrated: offX=%.2f offY=%.2f\n", calOffsetX, calOffsetY);
     } else {
-        Serial.printf("MPU6050 FAILED (err=%d)\n", err);
+        Serial.printf("MPU6050 not found (err=%d)\n", err);
         mpuOK = false;
     }
 
