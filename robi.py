@@ -108,7 +108,14 @@ def chat():
 
     except Exception as e:
         print(f"❌  /chat error: {e}")
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "internal_error", "message": str(e)}), 500
+
+
+@app.errorhandler(500)
+def handle_500(e):
+    return jsonify({"error": "unhandled_exception", "message": str(e)}), 500
 
 
 @app.route("/display", methods=["POST"])
@@ -201,4 +208,4 @@ def health():
 # ===== RUN =====
 if __name__ == "__main__":
     print("🚀  Starting Robi server on 0.0.0.0:5001 …")
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    app.run(host="0.0.0.0", port=5001, debug=True)

@@ -13,7 +13,7 @@
  *   - Touch: single tap → happy, double tap → excited
  *   - Text display with typewriter reveal
  *
- * Hardware: SSD1306 128×64 I2C (SDA=6, SCL=7), Touch GPIO 4
+ * Hardware: SSD1306 128×64 I2C (SDA=21, SCL=20), Touch GPIO 10, Buzzer GPIO 7
  */
 
 #include <Arduino.h>
@@ -30,11 +30,12 @@ static const char* WIFI_SSID     = "Spiderman_4g";
 static const char* WIFI_PASSWORD = "akashtheboss";
 static const char* SERVER        = "http://192.168.29.209:5001";
 
-#define I2C_SDA   6
-#define I2C_SCL   7
-#define TOUCH_PIN 13
+#define I2C_SDA   21
+#define I2C_SCL   20
+#define TOUCH_PIN 10
+#define BUZZER_PIN 7
 
-// MPU6050 shares I2C bus with OLED (GPIO 6/7)
+// OLED + MPU6050 share I2C bus (GPIO 21/20)
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
 
@@ -135,14 +136,16 @@ enum EmoEmotion {
     EMO_SIGH,         EMO_CURIOUS,      EMO_DIZZY,
     EMO_SNEEZE,       EMO_WINK,         EMO_STARTLED,
     EMO_SHY,          EMO_MISCHIEVOUS,  EMO_DAYDREAM,
-    // New batch
     EMO_ANGRY,        EMO_EXCITED_BOUNCE, EMO_LOVE,
     EMO_CONFUSED,     EMO_PROUD,        EMO_SCARED,
     EMO_PLAYFUL,      EMO_GRUMPY,       EMO_GLITCH,
     EMO_PEEK,         EMO_ROLL_EYES,    EMO_CROSS_EYED,
     EMO_FOCUSED,      EMO_VIBING,       EMO_SMUG,
     EMO_SHOCKED,      EMO_SLEEPY_BLINK, EMO_GIGGLE,
-    EMO_COUNT = 30
+    // Touch-specific emotions
+    EMO_NUZZLE,       EMO_TICKLE,       EMO_PEEK_A_BOO,
+    EMO_HEAD_SHAKE,   EMO_BOUNCE_JOY,
+    EMO_COUNT = 35
 };
 EmoEmotion currentEmotion = EMO_NONE;
 unsigned long emotionStart = 0;
@@ -157,9 +160,15 @@ unsigned long transitionStart = 0;
 #define MPU_ADDR 0x68
 bool mpuOK = false;
 float gyroLeanX = 0, gyroLeanY = 0;
-float gyroOffsetX = 0, gyroOffsetY = 0;  // smoothed pixel offset for whole-eye shift
+float gyroOffsetX = 0, gyroOffsetY = 0;
 unsigned long lastMotionCheck = 0;
-float calOffsetX = 0, calOffsetY = 0;    // calibration offsets (resting position)
+float calOffsetX = 0, calOffsetY = 0;
+
+// Gyro stability tracking
+#define GYRO_STABLE_THRESHOLD 0.10f
+#define GYRO_STABLE_DURATION  2000UL
+bool gyroIsStable = false;
+unsigned long gyroStableSince = 0;
 
 // State timing
 unsigned long stateStart = 0;
@@ -171,10 +180,42 @@ unsigned long textStart   = 0;
 unsigned long textDisplayDuration = 5000UL;
 
 // Touch — interrupt-driven for reliability
-volatile bool touchFlag      = false;   // set by ISR
+volatile bool touchFlag      = false;
 unsigned long lastTouchTime   = 0;
 int           tapCount        = 0;
 unsigned long doubleTapWindow = 400;
+
+// Touch reaction pools (indices into EmoEmotion)
+const EmoEmotion TOUCH_GENTLE[] = {
+    EMO_WINK, EMO_SHY, EMO_CURIOUS, EMO_STARTLED,
+    EMO_GIGGLE, EMO_SMUG, EMO_PEEK, EMO_NUZZLE,
+    EMO_PEEK_A_BOO, EMO_HEAD_SHAKE
+};
+const int TOUCH_GENTLE_N = 10;
+
+const EmoEmotion TOUCH_ENERGY[] = {
+    EMO_EXCITED_BOUNCE, EMO_LOVE, EMO_PLAYFUL,
+    EMO_VIBING, EMO_TICKLE, EMO_BOUNCE_JOY, EMO_SHOCKED
+};
+const int TOUCH_ENERGY_N = 7;
+
+const EmoEmotion TOUCH_CHAOS[] = {
+    EMO_ANGRY, EMO_GLITCH, EMO_CONFUSED,
+    EMO_CROSS_EYED, EMO_DIZZY, EMO_ROLL_EYES
+};
+const int TOUCH_CHAOS_N = 6;
+
+// Poke annoyance tracking
+int pokeCount = 0;
+unsigned long firstPokeTime = 0;
+
+// Touch flinch — instant micro-reaction
+bool touchFlinch = false;
+unsigned long flinchStart = 0;
+#define FLINCH_MS 120
+
+// Idle breathing — subtle aliveness
+float breathPhase = 0;
 
 // Polling
 unsigned long lastPoll = 0;
@@ -932,13 +973,87 @@ void drawEmoEmotion() {
         drawCrescentEye(lcx, cy + gigBounce, EYE_W/2, EYE_H/2, (int)(e * 6));
         drawCrescentEye(rcx, cy + gigBounce, EYE_W/2, EYE_H/2, (int)(e * 6));
     }
+
+    // ── NUZZLE: lean into touch, half-close contentedly ─────────
+    else if (currentEmotion == EMO_NUZZLE) {
+        float entry = min(1.0f, p * 3.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+        float tilt = e * 12.0f;  // lean sideways
+        float cozy = e * 0.5f;   // half-close lids
+        drawEye(lcx + (int)tilt, cy + (int)(e * 2), EYE_W, EYE_H,
+                e * 0.3f, e * 0.2f, (int)(e * 3), 0, cozy, cozy * 0.5f);
+        drawEye(rcx + (int)tilt, cy + (int)(e * 2), EYE_W, EYE_H,
+                e * 0.3f, e * 0.2f, (int)(e * 3), 0, cozy, cozy * 0.5f);
+    }
+
+    // ── TICKLE: erratic bouncing with size squishing ────────────
+    else if (currentEmotion == EMO_TICKLE) {
+        float e = (p < 0.08f) ? p * 12.5f : ((p > 0.85f) ? (1.0f-p)*6.67f : 1.0f);
+        e = min(1.0f, max(0.0f, e));
+        int jitterX = (int)(sin(t / 18.0f) * 6 * e);
+        int jitterY = (int)(cos(t / 22.0f) * 5 * e);
+        int squish = (int)(abs(sin(t / 25.0f)) * 4 * e);
+        drawCrescentEye(lcx + jitterX, cy + jitterY, EYE_W/2 + squish, EYE_H/2 - squish, (int)(e * 8));
+        drawCrescentEye(rcx - jitterX, cy + jitterY, EYE_W/2 + squish, EYE_H/2 - squish, (int)(e * 8));
+    }
+
+    // ── PEEK-A-BOO: close eyes → dramatic pop open ──────────────
+    else if (currentEmotion == EMO_PEEK_A_BOO) {
+        if (p < 0.25f) {
+            // Close eyes
+            float cp = p / 0.25f;
+            drawEye(lcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, cp, cp);
+            drawEye(rcx, cy, EYE_W, EYE_H, 0, 0, 0, 0, cp, cp);
+        } else if (p < 0.55f) {
+            // Held closed — suspense
+            drawSleepArc(lcx, cy + 2, EYE_W/2 + 2, 2);
+            drawSleepArc(rcx, cy + 2, EYE_W/2 + 2, 2);
+        } else if (p < 0.65f) {
+            // BOO! Eyes snap wide open + bigger
+            float pop = (p - 0.55f) / 0.1f;
+            int grow = (int)(pop * 8);
+            drawEye(lcx, cy - (int)(pop * 4), EYE_W + grow, EYE_H + grow, 0, -pop*0.3f, 0, 0, 0, 0);
+            drawEye(rcx, cy - (int)(pop * 4), EYE_W + grow, EYE_H + grow, 0, -pop*0.3f, 0, 0, 0, 0);
+        } else {
+            // Settle back with a happy bounce
+            float settle = (p - 0.65f) / 0.35f;
+            int shrink = (int)(settle * 8);
+            int bounce = (int)(sin(settle * PI * 2) * 3 * (1.0f - settle));
+            drawEye(lcx, cy + bounce, EYE_W + 8 - shrink, EYE_H + 8 - shrink, 0, 0, 0, 0, 0, 0);
+            drawEye(rcx, cy + bounce, EYE_W + 8 - shrink, EYE_H + 8 - shrink, 0, 0, 0, 0, 0, 0);
+        }
+    }
+
+    // ── HEAD SHAKE: eyes sway side to side (no no no) ──────────
+    else if (currentEmotion == EMO_HEAD_SHAKE) {
+        float entry = min(1.0f, p * 4.0f);
+        float hold = (p > 0.8f) ? (p - 0.8f) * 5.0f : 0.0f;
+        float e = entry * (1.0f - hold);
+        float shake = sin(t / 60.0f) * e * 16.0f;  // whole-eye sway
+        float look = sin(t / 60.0f) * e * 0.6f;
+        drawEye(lcx + (int)shake, cy, EYE_W, EYE_H, look, 0, 0, 0, 0, 0);
+        drawEye(rcx + (int)shake, cy, EYE_W, EYE_H, look, 0, 0, 0, 0, 0);
+    }
+
+    // ── BOUNCE JOY: alternating high bounces with growing ───────
+    else if (currentEmotion == EMO_BOUNCE_JOY) {
+        float e = (p < 0.08f) ? p * 12.5f : ((p > 0.85f) ? (1.0f-p)*6.67f : 1.0f);
+        e = min(1.0f, max(0.0f, e));
+        float phase = t / 55.0f;
+        int b1 = (int)(sin(phase) * 8 * e);
+        int b2 = (int)(sin(phase + PI * 0.7f) * 8 * e);
+        int grow = (int)(abs(sin(phase)) * 4 * e);
+        drawEye(lcx, cy + b1, EYE_W + grow, EYE_H + grow, sin(phase)*0.3f*e, 0, 0, 0, 0, 0);
+        drawEye(rcx, cy + b2, EYE_W + grow, EYE_H + grow, sin(phase)*0.3f*e, 0, 0, 0, 0, 0);
+    }
 }
 
 void startRandomEmotion() {
-    // Pick a random emotion (1-12)
-    currentEmotion = (EmoEmotion)(1 + random(0, EMO_COUNT));
+    // Pick from first 30 emotions (idle pool, excludes touch-specific)
+    currentEmotion = (EmoEmotion)(1 + random(0, 30));
     emotionStart = millis();
-    emotionDuration = 2000 + random(0, 2500);  // 2-4.5s hyperactive
+    emotionDuration = 2000 + random(0, 2500);
 
     const char* names[] = {"?", "Suspicious", "Sad", "Bored", "Sigh", "Curious",
                            "Dizzy", "Sneeze", "Wink", "Startled", "Shy",
@@ -946,8 +1061,10 @@ void startRandomEmotion() {
                            "Love", "Confused", "Proud", "Scared", "Playful",
                            "Grumpy", "Glitch", "Peek", "RollEyes", "CrossEyed",
                            "Focused", "Vibing", "Smug", "Shocked", "SleepyBlink",
-                           "Giggle"};
-    Serial.printf("Emo: %s (%lums)\n", names[currentEmotion], emotionDuration);
+                           "Giggle", "Nuzzle", "Tickle", "PeekABoo", "HeadShake",
+                           "BounceJoy"};
+    if (currentEmotion < 36)
+        Serial.printf("Emo: %s (%lums)\n", names[currentEmotion], emotionDuration);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -983,6 +1100,29 @@ void updateMotion() {
 
     float totalAccel = sqrt(ax*ax + ay*ay + az*az);
     float tiltMag = sqrt(gyroLeanX*gyroLeanX + gyroLeanY*gyroLeanY);
+
+    // ── Gyro stability tracking ──────────────────────────────────
+    if (tiltMag < GYRO_STABLE_THRESHOLD) {
+        // Below threshold — start or continue stability timer
+        if (gyroStableSince == 0) {
+            gyroStableSince = millis();
+        }
+        if (millis() - gyroStableSince >= GYRO_STABLE_DURATION) {
+            if (!gyroIsStable) {
+                gyroIsStable = true;
+                Serial.println("Gyro STABLE — emotions enabled");
+                // Schedule first emotion soon after stabilizing
+                nextEmotionTime = millis() + 1000UL + random(0, 2000);
+            }
+        }
+    } else {
+        // Tilting — reset stability
+        gyroStableSince = 0;
+        if (gyroIsStable) {
+            gyroIsStable = false;
+            Serial.println("Gyro UNSTABLE — emotions paused");
+        }
+    }
 
     // If significant tilt detected, cancel current emotion and delay next one
     if (tiltMag > 0.15f && currentEmotion != EMO_NONE && currentEmotion != EMO_DIZZY) {
@@ -1045,7 +1185,25 @@ void drawEyes() {
 
     // Animation offset
     float animY = getAnimOffsetY();
-    int offsetY = (int)animY;
+    
+    // Idle Breathing (subtle vertical bob)
+    float breathY = 0;
+    if (currentState == STATE_IDLE && currentEmotion == EMO_NONE && !isSleeping) {
+        breathY = sin(breathPhase) * 1.5f;
+    }
+
+    // Touch Flinch (quick horizontal stretch/vibrate)
+    int flinchX = 0;
+    if (touchFlinch) {
+        unsigned long ft = millis() - flinchStart;
+        if (ft < FLINCH_MS) {
+            flinchX = (int)(sin(ft / 15.0f) * 3.0f);
+        } else {
+            touchFlinch = false;
+        }
+    }
+
+    int offsetY = (int)(animY + breathY);
 
     u8g2.clearBuffer();
 
@@ -1068,14 +1226,14 @@ void drawEyes() {
             if (eyeCurrentX >  0.3f) curiosityR = (int)(abs(eyeCurrentX) * 6);
         }
 
-        drawEye(EYE_L_CX + gox, EYE_CY + offsetY + goy,
-                EYE_W, EYE_H + curiosityL,
+        drawEye(EYE_L_CX + gox - flinchX, EYE_CY + offsetY + goy,
+                EYE_W + flinchX * 2, EYE_H + curiosityL,
                 eyeCurrentX, eyeCurrentY,
                 mp.topTrimL, mp.bottomTrimL,
                 eyeLidTop, eyeLidBot);
 
-        drawEye(EYE_R_CX + gox, EYE_CY + offsetY + goy,
-                EYE_W, EYE_H + curiosityR,
+        drawEye(EYE_R_CX + gox + flinchX, EYE_CY + offsetY + goy,
+                EYE_W + flinchX * 2, EYE_H + curiosityR,
                 eyeCurrentX, eyeCurrentY,
                 mp.topTrimR, mp.bottomTrimR,
                 eyeLidTop, eyeLidBot);
@@ -1219,12 +1377,25 @@ void applyState(RobiState state) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  TOUCH — Interrupt-driven
+//  TOUCH — Interrupt-driven with randomized reactions
 // ═══════════════════════════════════════════════════════════════════════
 
 // ISR: runs instantly when touch pin goes HIGH, even during HTTP
 void IRAM_ATTR touchISR() {
     touchFlag = true;
+}
+
+// Trigger an emotion as a touch reaction
+void triggerTouchReaction(EmoEmotion emo, unsigned long dur) {
+    currentEmotion = emo;
+    emotionStart = millis();
+    emotionDuration = dur;
+    autoBlinkOn = false;
+    idleModeOn = false;
+    // Trigger flinch micro-animation
+    touchFlinch = true;
+    flinchStart = millis();
+    Serial.printf("Touch → Emo %d (%lums)\n", emo, dur);
 }
 
 void handleTouch() {
@@ -1246,18 +1417,59 @@ void handleTouch() {
 }
 
 void processTaps() {
-    // Wait for double-tap window to expire before deciding
+    // Wait for tap window to expire before deciding
     if (tapCount > 0 && millis() - lastTouchTime > doubleTapWindow) {
-        if (tapCount >= 2) {
-            Serial.println("Double tap → EXCITED");
-            prevAnimState = currentState;
-            currentState = STATE_EXCITED;
-            lastAppliedState = (RobiState)99;
+        // Track poke frequency for annoyance
+        if (pokeCount == 0) firstPokeTime = millis();
+        pokeCount++;
+
+        // Check for poke annoyance: 5+ pokes in 15 seconds
+        if (pokeCount >= 5 && millis() - firstPokeTime < 15000UL) {
+            Serial.println("Too many pokes → GRUMPY!");
+            triggerTouchReaction(EMO_GRUMPY, 3000);
+            pokeCount = 0;
+            tapCount = 0;
+            return;
+        }
+        // Reset poke counter if window expired
+        if (millis() - firstPokeTime > 15000UL) {
+            pokeCount = 1;
+            firstPokeTime = millis();
+        }
+
+        if (tapCount >= 3) {
+            // Triple tap → chaotic reaction
+            EmoEmotion e = TOUCH_CHAOS[random(0, TOUCH_CHAOS_N)];
+            triggerTouchReaction(e, 2500 + random(0, 1500));
+            Serial.println("Triple tap → Chaos!");
+        } else if (tapCount >= 2) {
+            // Double tap → energetic reaction (sometimes classic excited)
+            if (random(0, 5) == 0) {
+                prevAnimState = currentState;
+                currentState = STATE_EXCITED;
+                lastAppliedState = (RobiState)99;
+                touchFlinch = true;
+                flinchStart = millis();
+                Serial.println("Double tap → Classic EXCITED");
+            } else {
+                EmoEmotion e = TOUCH_ENERGY[random(0, TOUCH_ENERGY_N)];
+                triggerTouchReaction(e, 2000 + random(0, 1500));
+                Serial.println("Double tap → Energy!");
+            }
         } else {
-            Serial.println("Single tap → HAPPY");
-            prevAnimState = currentState;
-            currentState = STATE_HAPPY;
-            lastAppliedState = (RobiState)99;
+            // Single tap → gentle reaction (sometimes classic happy)
+            if (random(0, 5) == 0) {
+                prevAnimState = currentState;
+                currentState = STATE_HAPPY;
+                lastAppliedState = (RobiState)99;
+                touchFlinch = true;
+                flinchStart = millis();
+                Serial.println("Single tap → Classic HAPPY");
+            } else {
+                EmoEmotion e = TOUCH_GENTLE[random(0, TOUCH_GENTLE_N)];
+                triggerTouchReaction(e, 1500 + random(0, 1500));
+                Serial.println("Single tap → Gentle!");
+            }
         }
         tapCount = 0;
     }
@@ -1337,6 +1549,10 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(TOUCH_PIN), touchISR, RISING);
     Serial.printf("Touch interrupt attached on GPIO %d\n", TOUCH_PIN);
 
+    // Buzzer
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+
     // Boot animation: eyes closed
     eyeLidTop = 1.0f; eyeLidBot = 1.0f;
     eyeLidTargetTop = 1.0f; eyeLidTargetBot = 1.0f;
@@ -1370,11 +1586,11 @@ void setup() {
     nextSleepTime = millis() + 180000UL + random(0, 120000);  // 3-5 min
     nextEmotionTime = millis() + 4000UL + random(0, 4000);  // 4-8s hyperactive     // 8-15s
 
-    // MPU6050 on same I2C bus as OLED (GPIO 6/7)
+    // MPU6050 on same I2C bus as OLED (GPIO 21/20)
     // Wire already initialized by u8g2
     
     // I2C Scanner
-    Serial.println("Scanning I2C bus (GPIO 6/7)...");
+    Serial.println("Scanning I2C bus (GPIO 21/20)...");
     int found = 0;
     for (uint8_t addr = 1; addr < 127; addr++) {
         Wire.beginTransmission(addr);
@@ -1470,8 +1686,8 @@ void loop() {
         idleModeOn = true;
     }
 
-    // Random emo emotions during idle (every 8-15s)
-    if (currentState == STATE_IDLE && !isSleeping && currentEmotion == EMO_NONE) {
+    // Random emo emotions during idle — only when gyro is stable
+    if (currentState == STATE_IDLE && !isSleeping && currentEmotion == EMO_NONE && gyroIsStable) {
         if (millis() >= nextEmotionTime) {
             startRandomEmotion();
             autoBlinkOn = false;
@@ -1504,6 +1720,10 @@ void loop() {
         }
         drawEyes();
     }
+
+    // Update breathing phase
+    breathPhase += 0.04f;
+    if (breathPhase > TWO_PI) breathPhase -= TWO_PI;
 
     delay(16);   // ~60 FPS
 }
