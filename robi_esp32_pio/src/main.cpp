@@ -30,14 +30,94 @@ static const char* WIFI_SSID     = "Spiderman_4g";
 static const char* WIFI_PASSWORD = "akashtheboss";
 static const char* SERVER        = "http://192.168.29.209:5001";
 
-#define I2C_SDA   21
-#define I2C_SCL   20
+// OLED display (Software I2C)
+#define OLED_SDA  5
+#define OLED_SCL  6
+
+// MPU6050 accelerometer (Hardware I2C / Wire)
+#define MPU_SDA   21
+#define MPU_SCL   20
+
 #define TOUCH_PIN 10
 #define BUZZER_PIN 7
 
-// OLED + MPU6050 share I2C bus (GPIO 21/20)
+// U8g2 Software I2C — works reliably on any ESP32-C3 GPIO
+U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, OLED_SCL, OLED_SDA, U8X8_PIN_NONE);
 
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
+// ═══════════════════════════════════════════════════════════════════════
+//  BUZZER SOUNDS (using LEDC PWM)
+// ═══════════════════════════════════════════════════════════════════════
+#define BUZZER_CH  0  // LEDC channel for buzzer
+
+void buzzerTone(int freq, int durationMs) {
+    if (freq > 0) {
+        ledcSetup(BUZZER_CH, freq, 8);
+        ledcWrite(BUZZER_CH, 128);  // 50% duty
+    }
+    delay(durationMs);
+    ledcWrite(BUZZER_CH, 0);  // silence
+}
+
+void buzzerBootJingle() {
+    // Ascending cheerful jingle
+    buzzerTone(523, 80);  // C5
+    delay(30);
+    buzzerTone(659, 80);  // E5
+    delay(30);
+    buzzerTone(784, 80);  // G5
+    delay(30);
+    buzzerTone(1047, 150); // C6
+}
+
+void buzzerTouchBeep() {
+    buzzerTone(880, 40);  // A5 short blip
+}
+
+void buzzerDoubleTap() {
+    buzzerTone(988, 50);   // B5
+    delay(30);
+    buzzerTone(1319, 80);  // E6
+}
+
+void buzzerTripleTap() {
+    buzzerTone(1047, 40);  // C6
+    delay(20);
+    buzzerTone(1319, 40);  // E6
+    delay(20);
+    buzzerTone(1568, 60);  // G6
+}
+
+void buzzerShake() {
+    // Alarm warble
+    for (int i = 0; i < 3; i++) {
+        buzzerTone(1200, 40);
+        delay(20);
+        buzzerTone(800, 40);
+        delay(20);
+    }
+}
+
+void buzzerGrumpy() {
+    // Low descending grumble
+    buzzerTone(300, 100);
+    delay(30);
+    buzzerTone(200, 150);
+}
+
+void buzzerHappy() {
+    buzzerTone(784, 60);   // G5
+    delay(20);
+    buzzerTone(1047, 100); // C6
+}
+
+void buzzerSleepy() {
+    // Soft descending
+    buzzerTone(440, 100);
+    delay(50);
+    buzzerTone(330, 150);
+    delay(50);
+    buzzerTone(262, 200);
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 //  TIMING
@@ -1152,6 +1232,7 @@ void updateMotion() {
         emotionDuration = 2500;
         autoBlinkOn = false;
         idleModeOn = false;
+        buzzerShake();
         Serial.println("!! Shake -> Dizzy !!");
     }
 }
@@ -1426,6 +1507,7 @@ void processTaps() {
         // Check for poke annoyance: 5+ pokes in 15 seconds
         if (pokeCount >= 5 && millis() - firstPokeTime < 15000UL) {
             Serial.println("Too many pokes → GRUMPY!");
+            buzzerGrumpy();
             triggerTouchReaction(EMO_GRUMPY, 3000);
             pokeCount = 0;
             tapCount = 0;
@@ -1441,6 +1523,7 @@ void processTaps() {
             // Triple tap → chaotic reaction
             EmoEmotion e = TOUCH_CHAOS[random(0, TOUCH_CHAOS_N)];
             triggerTouchReaction(e, 2500 + random(0, 1500));
+            buzzerTripleTap();
             Serial.println("Triple tap → Chaos!");
         } else if (tapCount >= 2) {
             // Double tap → energetic reaction (sometimes classic excited)
@@ -1450,10 +1533,12 @@ void processTaps() {
                 lastAppliedState = (RobiState)99;
                 touchFlinch = true;
                 flinchStart = millis();
+                buzzerDoubleTap();
                 Serial.println("Double tap → Classic EXCITED");
             } else {
                 EmoEmotion e = TOUCH_ENERGY[random(0, TOUCH_ENERGY_N)];
                 triggerTouchReaction(e, 2000 + random(0, 1500));
+                buzzerDoubleTap();
                 Serial.println("Double tap → Energy!");
             }
         } else {
@@ -1464,6 +1549,7 @@ void processTaps() {
                 lastAppliedState = (RobiState)99;
                 touchFlinch = true;
                 flinchStart = millis();
+                buzzerTouchBeep();
                 Serial.println("Single tap → Classic HAPPY");
             } else {
                 EmoEmotion e = TOUCH_GENTLE[random(0, TOUCH_GENTLE_N)];
@@ -1541,17 +1627,25 @@ void pollServer() {
 void setup() {
     Serial.begin(115200);
     delay(300);
-    Serial.println("\n=== Robi (RoboEyes-style on U8g2) ===");
+    Serial.println("\n=== Robi (ESP32-C3) ===");
+
+    // Buzzer init (LEDC PWM channel 0)
+    ledcSetup(BUZZER_CH, 2000, 8);
+    ledcAttachPin(BUZZER_PIN, BUZZER_CH);
+    ledcWrite(BUZZER_CH, 0);  // silent
+
+    // Hardware I2C for MPU6050 (GPIO 21/20)
+    Wire.begin(MPU_SDA, MPU_SCL);
+    delay(50);
 
     u8g2.begin();
     u8g2.setContrast(200);
     pinMode(TOUCH_PIN, INPUT);
     attachInterrupt(digitalPinToInterrupt(TOUCH_PIN), touchISR, RISING);
-    Serial.printf("Touch interrupt attached on GPIO %d\n", TOUCH_PIN);
+    Serial.printf("Touch on GPIO %d\n", TOUCH_PIN);
 
-    // Buzzer
-    pinMode(BUZZER_PIN, OUTPUT);
-    digitalWrite(BUZZER_PIN, LOW);
+    // Boot jingle!
+    buzzerBootJingle();
 
     // Boot animation: eyes closed
     eyeLidTop = 1.0f; eyeLidBot = 1.0f;
@@ -1586,11 +1680,11 @@ void setup() {
     nextSleepTime = millis() + 180000UL + random(0, 120000);  // 3-5 min
     nextEmotionTime = millis() + 4000UL + random(0, 4000);  // 4-8s hyperactive     // 8-15s
 
-    // MPU6050 on same I2C bus as OLED (GPIO 21/20)
-    // Wire already initialized by u8g2
+    // MPU6050 on Hardware I2C (GPIO 21/20)
+    // OLED uses Software I2C (GPIO 5/6) via u8g2
     
-    // I2C Scanner
-    Serial.println("Scanning I2C bus (GPIO 21/20)...");
+    // I2C Scanner on Wire (MPU bus)
+    Serial.println("Scanning MPU I2C bus (GPIO 21/20)...");
     int found = 0;
     for (uint8_t addr = 1; addr < 127; addr++) {
         Wire.beginTransmission(addr);
