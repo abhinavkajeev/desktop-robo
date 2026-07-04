@@ -39,14 +39,20 @@ static const char* SERVER        = "http://192.168.29.209:5001";
 
 // OLED + MPU6050 share Hardware I2C on GPIO 5(SDA)/6(SCL)
 #define MPU_ADDR 0x68
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, I2C_SCL, I2C_SDA);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  BUZZER SOUNDS (using LEDC PWM)
 // ═══════════════════════════════════════════════════════════════════════
 #define BUZZER_CH  0  // LEDC channel for buzzer
 
+bool buzzerMuted = false;
+
 void buzzerTone(int freq, int durationMs) {
+    if (buzzerMuted) {
+        delay(durationMs);
+        return;
+    }
     if (freq > 0) {
         ledcSetup(BUZZER_CH, freq, 8);
         ledcWrite(BUZZER_CH, 128);  // 50% duty
@@ -108,12 +114,168 @@ void buzzerHappy() {
 }
 
 void buzzerSleepy() {
-    // Soft descending
-    buzzerTone(440, 100);
+    // Slow descending yawn
+    for (int i = 0; i < 8; i++) {
+        buzzerTone(500 - i * 30, 60);
+        delay(10);
+    }
+}
+
+// ── PER-EMOTION REALISTIC SOUNDS ─────────────────────
+void buzzerSad() {
+    // Soft crying whimper
+    buzzerTone(440, 150); delay(80);
+    buzzerTone(392, 150); delay(80);
+    buzzerTone(330, 200); delay(60);
+    buzzerTone(294, 250);
+}
+void buzzerCurious() {
+    // Cartoon "hmm?" rising glide
+    for (int i = 0; i < 10; i++) {
+        buzzerTone(350 + i * 40, 30);
+    }
+}
+void buzzerSneeze() {
+    for (int i = 0; i < 5; i++) {
+        buzzerTone(250 + i * 20, 40); delay(10);
+    }
     delay(50);
-    buzzerTone(330, 150);
-    delay(50);
-    buzzerTone(262, 200);
+    buzzerTone(2000, 60); buzzerTone(800, 40);
+}
+void buzzerWink() {
+    buzzerTone(800, 25); delay(30);
+    buzzerTone(1200, 40); buzzerTone(1400, 30);
+}
+void buzzerStartled() {
+    buzzerTone(2000, 50); delay(10);
+    buzzerTone(1600, 30); buzzerTone(1800, 40);
+}
+void buzzerShy() {
+    buzzerTone(700, 20); delay(80);
+    buzzerTone(750, 20); delay(100);
+    buzzerTone(700, 25);
+}
+void buzzerMischievous() {
+    for (int i = 0; i < 5; i++) {
+        buzzerTone(300 + i * 50, 35); delay(40);
+    }
+}
+void buzzerAngry() {
+    for (int i = 0; i < 3; i++) {
+        buzzerTone(150, 60); buzzerTone(200, 40); delay(15);
+    }
+    buzzerTone(120, 100);
+}
+void buzzerExcited() {
+    for (int i = 0; i < 6; i++) {
+        buzzerTone(600 + i * 120, 30); delay(10);
+    }
+}
+void buzzerLove() {
+    buzzerTone(523, 50); buzzerTone(659, 70); delay(120);
+    buzzerTone(523, 50); buzzerTone(659, 70); delay(80);
+    buzzerTone(784, 100);
+}
+void buzzerConfused() {
+    buzzerTone(450, 50); buzzerTone(500, 40);
+    buzzerTone(420, 50); buzzerTone(480, 40);
+    buzzerTone(440, 60);
+}
+void buzzerScared() {
+    for (int i = 0; i < 6; i++) {
+        buzzerTone(1200 + i * 80 + (i % 2) * 150, 30); delay(15);
+    }
+}
+void buzzerPlayful() {
+    for (int i = 0; i < 4; i++) {
+        buzzerTone(800 + (i % 2) * 400, 40); delay(20);
+    }
+}
+void buzzerGlitch() {
+    for (int i = 0; i < 5; i++) {
+        buzzerTone(200 + random(0, 2000), 20); delay(5);
+    }
+}
+void buzzerShocked() {
+    buzzerTone(800, 30); buzzerTone(1600, 50); delay(40);
+    buzzerTone(1800, 80);
+}
+void buzzerGiggle() {
+    for (int i = 0; i < 4; i++) {
+        buzzerTone(900 + (i % 2) * 200, 30); delay(25);
+    }
+}
+void buzzerVibing() {
+    buzzerTone(392, 40); delay(30);
+    buzzerTone(440, 40); delay(60);
+    buzzerTone(392, 40); delay(30);
+    buzzerTone(494, 50);
+}
+void buzzerProud() {
+    buzzerTone(523, 50); buzzerTone(659, 50);
+    buzzerTone(784, 60); delay(20);
+    buzzerTone(1047, 120);
+}
+void buzzerBored() {
+    for (int i = 0; i < 6; i++) {
+        buzzerTone(400 - i * 20, 80);
+    }
+}
+void buzzerPeekABoo() {
+    buzzerTone(300, 60); delay(250);
+    buzzerTone(900, 40); buzzerTone(1200, 60);
+}
+void buzzerTickle() {
+    for (int i = 0; i < 6; i++) {
+        buzzerTone(1000 + random(0, 800), 20); delay(15);
+    }
+}
+void buzzerSmug() {
+    for (int i = 0; i < 4; i++) {
+        buzzerTone(400 + i * 40, 45);
+    }
+}
+
+// ── EMOTION SOUND DISPATCHER ─────────────────────────
+void buzzerForEmotion(int emo) {
+    switch (emo) {
+        case 1:  buzzerCurious();     break;  // Suspicious
+        case 2:  buzzerSad();         break;  // Sad
+        case 3:  buzzerBored();       break;  // Bored
+        case 4:  buzzerSad();         break;  // Sigh
+        case 5:  buzzerCurious();     break;  // Curious
+        case 6:  buzzerShake();       break;  // Dizzy
+        case 7:  buzzerSneeze();      break;  // Sneeze
+        case 8:  buzzerWink();        break;  // Wink
+        case 9:  buzzerStartled();    break;  // Startled
+        case 10: buzzerShy();         break;  // Shy
+        case 11: buzzerMischievous(); break;  // Mischievous
+        case 12: buzzerSleepy();      break;  // Daydream
+        case 13: buzzerAngry();       break;  // Angry
+        case 14: buzzerExcited();     break;  // ExcitedBounce
+        case 15: buzzerLove();        break;  // Love
+        case 16: buzzerConfused();    break;  // Confused
+        case 17: buzzerProud();       break;  // Proud
+        case 18: buzzerScared();      break;  // Scared
+        case 19: buzzerPlayful();     break;  // Playful
+        case 20: buzzerGrumpy();      break;  // Grumpy
+        case 21: buzzerGlitch();      break;  // Glitch
+        case 22: buzzerCurious();     break;  // Peek
+        case 23: buzzerConfused();    break;  // RollEyes
+        case 24: buzzerGlitch();      break;  // CrossEyed
+        case 25: buzzerVibing();      break;  // Focused
+        case 26: buzzerVibing();      break;  // Vibing
+        case 27: buzzerSmug();        break;  // Smug
+        case 28: buzzerShocked();     break;  // Shocked
+        case 29: buzzerSleepy();      break;  // SleepyBlink
+        case 30: buzzerGiggle();      break;  // Giggle
+        case 31: buzzerHappy();       break;  // Nuzzle
+        case 32: buzzerTickle();      break;  // Tickle
+        case 33: buzzerPeekABoo();    break;  // PeekABoo
+        case 34: buzzerConfused();    break;  // HeadShake
+        case 35: buzzerExcited();     break;  // BounceJoy
+        default: buzzerTouchBeep();   break;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -241,10 +403,14 @@ unsigned long lastMotionCheck = 0;
 float calOffsetX = 0, calOffsetY = 0;
 
 // Gyro stability tracking
-#define GYRO_STABLE_THRESHOLD 0.10f
-#define GYRO_STABLE_DURATION  2000UL
+#define GYRO_STABLE_THRESHOLD 0.60f
+#define GYRO_STABLE_DURATION 2000UL
 bool gyroIsStable = false;
 unsigned long gyroStableSince = 0;
+
+// Upside-down detection (MPU mounted inverted: normal az ≈ -9.81)
+bool isUpsideDown = false;
+#define UPSIDE_DOWN_AZ_THRESHOLD 3.0f   // az ABOVE this = upside down
 
 // State timing
 unsigned long stateStart = 0;
@@ -260,30 +426,6 @@ volatile bool touchFlag      = false;
 unsigned long lastTouchTime   = 0;
 int           tapCount        = 0;
 unsigned long doubleTapWindow = 400;
-
-// Touch reaction pools (indices into EmoEmotion)
-const EmoEmotion TOUCH_GENTLE[] = {
-    EMO_WINK, EMO_SHY, EMO_CURIOUS, EMO_STARTLED,
-    EMO_GIGGLE, EMO_SMUG, EMO_PEEK, EMO_NUZZLE,
-    EMO_PEEK_A_BOO, EMO_HEAD_SHAKE
-};
-const int TOUCH_GENTLE_N = 10;
-
-const EmoEmotion TOUCH_ENERGY[] = {
-    EMO_EXCITED_BOUNCE, EMO_LOVE, EMO_PLAYFUL,
-    EMO_VIBING, EMO_TICKLE, EMO_BOUNCE_JOY, EMO_SHOCKED
-};
-const int TOUCH_ENERGY_N = 7;
-
-const EmoEmotion TOUCH_CHAOS[] = {
-    EMO_ANGRY, EMO_GLITCH, EMO_CONFUSED,
-    EMO_CROSS_EYED, EMO_DIZZY, EMO_ROLL_EYES
-};
-const int TOUCH_CHAOS_N = 6;
-
-// Poke annoyance tracking
-int pokeCount = 0;
-unsigned long firstPokeTime = 0;
 
 // Touch flinch — instant micro-reaction
 bool touchFlinch = false;
@@ -905,15 +1047,18 @@ void drawEmoEmotion() {
                 0, (int)(e * 6), e * 0.3f, 0);
     }
 
-    // ── SCARED: wide eyes, trembling ────────────────────────────
+    // ── SCARED: dramatic wide eyes + heavy trembling ────────────
     else if (currentEmotion == EMO_SCARED) {
         float entry = min(1.0f, p * 5.0f);
         float hold = (p > 0.7f) ? (p - 0.7f) / 0.3f : 0.0f;
         float e = entry * (1.0f - hold);
-        int tremble = (int)(sin(t / 15.0f) * 2 * e);
-        int grow = (int)(e * 5);
-        drawEye(lcx + tremble, cy, EYE_W + grow, EYE_H + grow, 0, -e*0.2f, 0, 0, 0, 0);
-        drawEye(rcx + tremble, cy, EYE_W + grow, EYE_H + grow, 0, -e*0.2f, 0, 0, 0, 0);
+        int tremble = (int)(sin(t / 12.0f) * 5 * e);
+        int grow = (int)(e * 8);
+        int shiftUp = (int)(e * 4);
+        drawEye(lcx + tremble, cy - shiftUp, EYE_W + grow, EYE_H + grow,
+                0, -e * 0.4f, 0, 0, 0, 0);
+        drawEye(rcx + tremble, cy - shiftUp, EYE_W + grow, EYE_H + grow,
+                0, -e * 0.4f, 0, 0, 0, 0);
     }
 
     // ── PLAYFUL: alternating bounce ─────────────────────────────
@@ -1142,6 +1287,7 @@ void startRandomEmotion() {
                            "BounceJoy"};
     if (currentEmotion < 36)
         Serial.printf("Emo: %s (%lums)\n", names[currentEmotion], emotionDuration);
+    buzzerForEmotion(currentEmotion);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1201,8 +1347,9 @@ void updateMotion() {
         }
     }
 
-    // If significant tilt detected, cancel current emotion and delay next one
-    if (tiltMag > 0.15f && currentEmotion != EMO_NONE && currentEmotion != EMO_DIZZY) {
+    // If significant tilt detected, cancel current emotion (except motion-triggered ones)
+    if (tiltMag > 0.5f && currentEmotion != EMO_NONE
+        && currentEmotion != EMO_DIZZY && currentEmotion != EMO_SCARED) {
         currentEmotion = EMO_NONE;
         autoBlinkOn = true;
         idleModeOn = true;
@@ -1210,16 +1357,51 @@ void updateMotion() {
     }
 
     // Suppress new emotions while tilting
-    if (tiltMag > 0.15f) {
+    if (tiltMag > 0.5f) {
         nextEmotionTime = max(nextEmotionTime, millis() + 3000UL);
+    }
+
+    // ── Upside-down detection: Z-axis flips → scared ─────────────
+    bool flipped = (az > UPSIDE_DOWN_AZ_THRESHOLD);
+
+    if (flipped) {
+        if (!isUpsideDown) {
+            isUpsideDown = true;
+            Serial.println("!! UPSIDE DOWN -> Scared !!");
+        }
+        if (currentEmotion != EMO_DIZZY) {
+            if (currentEmotion != EMO_SCARED) {
+                currentEmotion = EMO_SCARED;
+                emotionStart = millis();
+                emotionDuration = 5000;
+                autoBlinkOn = false;
+                idleModeOn = false;
+                buzzerScared();
+            }
+            else if (millis() - emotionStart > emotionDuration) {
+                emotionStart = millis();
+                emotionDuration = 5000;
+            }
+        }
+    } else {
+        if (isUpsideDown) {
+            isUpsideDown = false;
+            if (currentEmotion == EMO_SCARED) {
+                currentEmotion = EMO_NONE;
+                autoBlinkOn = true;
+                idleModeOn = true;
+            }
+            nextEmotionTime = millis() + 3000UL + random(0, 2000);
+            Serial.println("Right-side up -> back to normal");
+        }
     }
 
     // Debug every 500ms
     static unsigned long lastDebug = 0;
     if (millis() - lastDebug > 500) {
         lastDebug = millis();
-        Serial.printf("MPU: X=%.1f Y=%.1f Z=%.1f | tot=%.1f | tilt=%.2f\n",
-                      ax, ay, az, totalAccel, tiltMag);
+        Serial.printf("MPU: X=%.1f Y=%.1f Z=%.1f | tot=%.1f | tilt=%.2f | flipped=%d\n",
+                      ax, ay, az, totalAccel, tiltMag, isUpsideDown);
     }
 
     // Shaking → dizzy emotion
@@ -1495,64 +1677,28 @@ void handleTouch() {
 }
 
 void processTaps() {
-    // Wait for tap window to expire before deciding
     if (tapCount > 0 && millis() - lastTouchTime > doubleTapWindow) {
-        // Track poke frequency for annoyance
-        if (pokeCount == 0) firstPokeTime = millis();
-        pokeCount++;
-
-        // Check for poke annoyance: 5+ pokes in 15 seconds
-        if (pokeCount >= 5 && millis() - firstPokeTime < 15000UL) {
-            Serial.println("Too many pokes → GRUMPY!");
-            buzzerGrumpy();
-            triggerTouchReaction(EMO_GRUMPY, 3000);
-            pokeCount = 0;
-            tapCount = 0;
-            return;
-        }
-        // Reset poke counter if window expired
-        if (millis() - firstPokeTime > 15000UL) {
-            pokeCount = 1;
-            firstPokeTime = millis();
-        }
-
-        if (tapCount >= 3) {
-            // Triple tap → chaotic reaction
-            EmoEmotion e = TOUCH_CHAOS[random(0, TOUCH_CHAOS_N)];
-            triggerTouchReaction(e, 2500 + random(0, 1500));
-            buzzerTripleTap();
-            Serial.println("Triple tap → Chaos!");
-        } else if (tapCount >= 2) {
-            // Double tap → energetic reaction (sometimes classic excited)
-            if (random(0, 5) == 0) {
-                prevAnimState = currentState;
-                currentState = STATE_EXCITED;
-                lastAppliedState = (RobiState)99;
-                touchFlinch = true;
-                flinchStart = millis();
-                buzzerDoubleTap();
-                Serial.println("Double tap → Classic EXCITED");
-            } else {
-                EmoEmotion e = TOUCH_ENERGY[random(0, TOUCH_ENERGY_N)];
-                triggerTouchReaction(e, 2000 + random(0, 1500));
-                buzzerDoubleTap();
-                Serial.println("Double tap → Energy!");
-            }
+        if (tapCount >= 2) {
+            // Double tap → random emotion with matching sound
+            EmoEmotion emo = (EmoEmotion)(1 + random(0, 30));
+            currentEmotion = emo;
+            emotionStart = millis();
+            emotionDuration = 3000 + random(0, 2000);
+            autoBlinkOn = false;
+            idleModeOn = false;
+            touchFlinch = true;
+            flinchStart = millis();
+            buzzerForEmotion(emo);
+            Serial.printf("Double tap → Random Emo %d\n", emo);
         } else {
-            // Single tap → gentle reaction (sometimes classic happy)
-            if (random(0, 5) == 0) {
-                prevAnimState = currentState;
-                currentState = STATE_HAPPY;
-                lastAppliedState = (RobiState)99;
-                touchFlinch = true;
-                flinchStart = millis();
-                buzzerTouchBeep();
-                Serial.println("Single tap → Classic HAPPY");
-            } else {
-                EmoEmotion e = TOUCH_GENTLE[random(0, TOUCH_GENTLE_N)];
-                triggerTouchReaction(e, 1500 + random(0, 1500));
-                Serial.println("Single tap → Gentle!");
-            }
+            // Single tap → happy
+            prevAnimState = currentState;
+            currentState = STATE_HAPPY;
+            lastAppliedState = (RobiState)99;
+            touchFlinch = true;
+            flinchStart = millis();
+            buzzerHappy();
+            Serial.println("Single tap → HAPPY");
         }
         tapCount = 0;
     }
@@ -1734,6 +1880,28 @@ void setup() {
 //  LOOP
 // ═══════════════════════════════════════════════════════════════════════
 void loop() {
+    // Check for touch and hold (mute toggle)
+    static unsigned long touchHoldStart = 0;
+    static bool holding = false;
+    static bool holdTriggered = false;
+
+    if (digitalRead(TOUCH_PIN)) {
+        if (!holding) {
+            holding = true;
+            holdTriggered = false;
+            touchHoldStart = millis();
+        } else if (!holdTriggered && (millis() - touchHoldStart > 1000)) {
+            buzzerMuted = !buzzerMuted;
+            holdTriggered = true;
+            tapCount = 0;
+            touchFlag = false;
+            if (!buzzerMuted) buzzerTouchBeep();
+            Serial.println(buzzerMuted ? "Buzzer MUTED" : "Buzzer UNMUTED");
+        }
+    } else {
+        holding = false;
+    }
+
     handleTouch();
     processTaps();
     pollServer();
